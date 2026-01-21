@@ -1,0 +1,198 @@
+name: Flyway Migration
+description: "Flyway to manage DB migrations/updates"
+inputs:
+  env:
+    description: 'Target environment for migration as nonprod or prod. If nonprod, test database will also be created and migrated.'
+    required: true
+  vault-aurora-master-username:
+    description: 'Vault path to database master/admin username'
+    required: true
+  vault-aurora-master-password:
+    description: 'Vault path to database master/admin password'
+    required: true
+  vault-aurora-service-username:
+    description: 'Vault path to database user for service'
+    required: true
+  vault-aurora-service-password:
+    description: 'Vault path to database password for service'
+    required: true
+  vault-aurora-test-username:
+    description: 'Vault path to database test username'
+    required: false
+  vault-aurora-test-password:
+    description: 'Vault path to database test password'
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get repository metadata
+      id: metadata
+      uses: Nordstrom-Internal/app02944-repository-metadata@v1.0.0
+
+    - name: Set Environment Configuration
+      id: env-config
+      shell: bash
+      run: |
+        if [[ "${{ inputs.env }}" == "nonprod" ]]; then
+          echo "account-id=007979315855" >> $GITHUB_OUTPUT
+          echo "aurora-database-endpoint=fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com" >> $GITHUB_OUTPUT
+          echo "vault-url=https://nonprodendpoint-to-prodvault.nordstrom.app:8200" >> $GITHUB_OUTPUT
+          echo "env-prefix=NONPROD" >> $GITHUB_OUTPUT
+          echo "Configured for nonprod environment"
+        elif [[ "${{ inputs.env }}" == "prod" ]]; then
+          echo "account-id=969378265367" >> $GITHUB_OUTPUT
+          echo "aurora-database-endpoint=fin-data-integration-cluster-prod.cluster-cx664c8q0d16.us-west-2.rds.amazonaws.com" >> $GITHUB_OUTPUT
+          echo "vault-url=https://prod-vault.vault.vip.nordstrom.com:8200" >> $GITHUB_OUTPUT
+          echo "env-prefix=PROD" >> $GITHUB_OUTPUT
+          echo "Configured for prod environment"
+        else
+          echo "ERROR: Invalid environment '${{ inputs.env }}'. Must be 'nonprod' or 'prod'"
+          exit 1
+        fi
+        echo "  Cloud Account ID: $(grep account-id $GITHUB_OUTPUT | cut -d= -f2)"
+        echo "  Database Host: $(grep aurora-database-endpoint $GITHUB_OUTPUT | cut -d= -f2)"
+        echo "  Vault URL: $(grep vault-url $GITHUB_OUTPUT | cut -d= -f2)"
+        echo "  Environment Prefix: $(grep env-prefix $GITHUB_OUTPUT | cut -d= -f2)"
+
+    - name: Get vault secrets
+      id: vault-output
+      uses: Nordstrom-Internal/APP02944-vault-extension/vault-output@v0
+      with:
+        secrets: |
+          ${{ inputs.vault-aurora-master-username }}
+          ${{ inputs.vault-aurora-master-password }}
+          ${{ inputs.vault-aurora-service-username }}
+          ${{ inputs.vault-aurora-service-password }}
+          ${{ inputs.vault-aurora-test-username }}
+          ${{ inputs.vault-aurora-test-password }}
+        vault-auth-role: ${{ steps.metadata.outputs.app-id }}
+        vault-url: ${{ steps.env-config.outputs.vault-url }}
+        export-as-environment-variables: true
+
+    - name: Map Vault Environment Variables
+      id: env-vars
+      shell: bash
+      run: |
+        ENV_PREFIX="${{ steps.env-config.outputs.env-prefix }}"
+        echo "Mapping environment variables with prefix: ${ENV_PREFIX}"
+        
+        # Map vault environment variables to expected names using safe parameter expansion
+        AURORA_MASTER_USERNAME_VAR="${ENV_PREFIX}_AURORA_MASTER_USERNAME"
+        AURORA_MASTER_PASSWORD_VAR="${ENV_PREFIX}_AURORA_MASTER_PASSWORD"
+        AURORA_SERVICE_USERNAME_VAR="${ENV_PREFIX}_AURORA_SERVICE_USERNAME"
+        AURORA_SERVICE_PASSWORD_VAR="${ENV_PREFIX}_AURORA_SERVICE_PASSWORD"
+        AURORA_TEST_USERNAME_VAR="${ENV_PREFIX}_AURORA_TEST_USERNAME"
+        AURORA_TEST_PASSWORD_VAR="${ENV_PREFIX}_AURORA_TEST_PASSWORD"
+
+        # Store the constructed variable names (not their values) for safe indirect expansion
+        AURORA_MASTER_USERNAME="${!AURORA_MASTER_USERNAME_VAR}"
+        AURORA_MASTER_PASSWORD="${!AURORA_MASTER_PASSWORD_VAR}"
+        AURORA_SERVICE_USERNAME="${!AURORA_SERVICE_USERNAME_VAR}"
+        AURORA_SERVICE_PASSWORD="${!AURORA_SERVICE_PASSWORD_VAR}"
+        AURORA_TEST_USERNAME="${!AURORA_TEST_USERNAME_VAR}"
+        AURORA_TEST_PASSWORD="${!AURORA_TEST_PASSWORD_VAR}"
+        
+        # Export to GITHUB_OUTPUT for use in subsequent steps
+        echo "aurora-master-username=${AURORA_MASTER_USERNAME}" >> $GITHUB_OUTPUT
+        echo "aurora-master-password=${AURORA_MASTER_PASSWORD}" >> $GITHUB_OUTPUT
+        echo "aurora-service-username=${AURORA_SERVICE_USERNAME}" >> $GITHUB_OUTPUT
+        echo "aurora-service-password=${AURORA_SERVICE_PASSWORD}" >> $GITHUB_OUTPUT
+        echo "aurora-test-username=${AURORA_TEST_USERNAME}" >> $GITHUB_OUTPUT
+        echo "aurora-test-password=${AURORA_TEST_PASSWORD}" >> $GITHUB_OUTPUT
+
+    - name: Fetch Artifactory token
+      id: artifactory
+      uses: jfrog/setup-jfrog-cli@v4
+      env:
+        JF_URL: https://artifactory.nordstrom.com/
+      with:
+        oidc-provider-name: github
+        oidc-audience: jwn
+
+    - name: Authenticate with AWS
+      uses: Nordstrom-Internal/app02944-jwn-auth@v2
+      with:
+        cloud-provider: aws
+        region: us-west-2
+        cloud-identifier: ${{ steps.env-config.outputs.account-id }}
+
+    - name: Run Gradle init
+      uses: Nordstrom-Internal/APP08365-sp-extension-gradle/gradle-init@v0.3.0
+      with:
+        artifactory-username: ${{ steps.artifactory.outputs.oidc-user }}
+        artifactory-password: ${{ steps.artifactory.outputs.oidc-token }}
+
+    - name: Initiate Main Database
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        AURORA_DATABASE_ENDPOINT: ${{ steps.env-config.outputs.aurora-database-endpoint }}
+        AURORA_DATABASE_NAME: dataintegration
+        AURORA_MASTER_USERNAME: ${{ steps.env-vars.outputs.aurora-master-username }}
+        AURORA_MASTER_PASSWORD: ${{ steps.env-vars.outputs.aurora-master-password }}
+        AURORA_SERVICE_USERNAME: ${{ steps.env-vars.outputs.aurora-service-username }}
+        AURORA_SERVICE_PASSWORD: ${{ steps.env-vars.outputs.aurora-service-password }}
+      run: |
+        chmod +x db_script/init-main-database.sh
+        ./db_script/init-main-database.sh
+
+    - name: Initiate Test Database
+      if: ${{ inputs.env == 'nonprod' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        AURORA_DATABASE_ENDPOINT: ${{ steps.env-config.outputs.aurora-database-endpoint }}
+        AURORA_DATABASE_NAME: dataintegration_test
+        AURORA_MASTER_USERNAME: ${{ steps.env-vars.outputs.aurora-master-username }}
+        AURORA_MASTER_PASSWORD: ${{ steps.env-vars.outputs.aurora-master-password }}
+        AURORA_TEST_USERNAME: ${{ steps.env-vars.outputs.aurora-test-username }}
+        AURORA_TEST_PASSWORD: ${{ steps.env-vars.outputs.aurora-test-password }}
+      run: |
+        chmod +x db_script/init-test-database.sh
+        ./db_script/init-test-database.sh    
+
+    - name: Run Flyway Migrate (Main DB)
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      id: flyway-migrate-main-database
+      env:
+        APP_ID: ${{ steps.metadata.outputs.app-id }}
+        AWS_ROLE_ARN: arn:aws:iam::${{ steps.env-config.outputs.account-id }}:role/pipeline/gitlab/APP09831_Deployment_Role
+        AWS_WEB_IDENTITY_TOKEN_FILE: /home/runner/.jwt/aws_sts_id_token
+        CLOUD_ACCOUNT_ID: ${{ steps.env-config.outputs.account-id }}
+        AURORA_DATABASE_ENDPOINT: ${{ steps.env-config.outputs.aurora-database-endpoint }}
+        AURORA_DATABASE_NAME: dataintegration
+        AURORA_MASTER_USERNAME: ${{ steps.env-vars.outputs.aurora-master-username }}
+        AURORA_MASTER_PASSWORD: ${{ steps.env-vars.outputs.aurora-master-password }}
+      run: |
+        echo "=================================================="
+        echo "Starting Flyway Migration for MAIN DATABASE"
+        gradle flywayInfo
+        gradle flywayMigrate
+        gradle flywayInfo
+        echo "MAIN DATABASE migration completed"
+        echo "=================================================="
+
+    - name: Run Flyway Migrate (Test DB)
+      if: ${{ inputs.env == 'nonprod' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      id: flyway-migrate-test-database
+      env:
+        APP_ID: ${{ steps.metadata.outputs.app-id }}
+        AWS_ROLE_ARN: arn:aws:iam::${{ steps.env-config.outputs.account-id }}:role/pipeline/gitlab/APP09831_Deployment_Role
+        AWS_WEB_IDENTITY_TOKEN_FILE: /home/runner/.jwt/aws_sts_id_token
+        CLOUD_ACCOUNT_ID: ${{ steps.env-config.outputs.account-id }}
+        AURORA_DATABASE_ENDPOINT: ${{ steps.env-config.outputs.aurora-database-endpoint }}
+        AURORA_DATABASE_NAME: dataintegration_test
+        AURORA_MASTER_USERNAME: ${{ steps.env-vars.outputs.aurora-master-username }}
+        AURORA_MASTER_PASSWORD: ${{ steps.env-vars.outputs.aurora-master-password }}
+      run: |
+        echo "=================================================="
+        echo "Starting Flyway Migration for TEST DATABASE"
+        gradle flywayInfo
+        gradle flywayMigrate
+        gradle flywayInfo
+        echo "TEST DATABASE migration completed"
+        echo "=================================================="

@@ -1,0 +1,105 @@
+name: Manual Production NSK Deployment Workflow - APP09831
+
+on:
+  workflow_dispatch:
+    inputs:
+      change-request-short-description:
+        description: 'Change Request Short Description'
+        required: true
+        type: string
+      change-request-number:
+        description: 'Change Request number when bringing a pre-approved CR (BYOCR)'
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gradle-build:
+    name: Gradle Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: 8
+
+  docker-build:
+    needs: gradle-build
+    name: Docker Container Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/docker.yml@v7
+    secrets: inherit
+    with:
+      app-name: ertm-transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.gradle-build.outputs.build-version }}
+
+  change-request:
+    name: Create Change Request
+    needs: docker-build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/change-request.yml@v7
+    secrets: inherit
+    with:
+      change-request-risk: 3
+      change-request-assignment-group: TECH_FIN_DATA_INTEGRATION_SUPPORT
+      change-request-short-description: ${{ github.event.inputs.change-request-short-description }}
+      change-request-number: ${{ github.event.inputs.change-request-number }}
+      change-request-full-description: |
+        Automated production deployment of ertm transaction consumer service.
+        Commit: ${{ github.sha }}
+        Workflow Run ID: ${{ github.run_id }}
+        Actor: ${{ github.actor }}
+      change-request-backout-plan: "Revert to the previous commit and redeploy."
+      vault-servicenow-creds-paths: |-
+        global SNAPI_PROD_USER as servicenow-username
+        global SNAPI_PROD_PW as servicenow-password
+      github-job-runs-on: linux-prod
+
+  k8s-nskapp-deploy-main-branch:
+    needs: [docker-build, change-request]
+    name: Deploy to NSK Main Branch
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-deploy.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-prod
+      github-job-environment: prod
+      deployment-environment: prod
+      app-name: 'ertm-transaction-consumer-service'
+      app-id: 'APP09831'
+      app-version: ${{ needs.docker-build.outputs.app-version }}
+      container-image-name: ${{ needs.docker-build.outputs.image-name }}
+      container-image-tag: ${{ needs.docker-build.outputs.image-tag }}
+      cloud-provider: 'aws'
+      cloud-region: 'us-west-2'
+      cloud-identifier: '969378265367'
+      deployment-target: 'nskapp'
+      nsk-cluster: 'nsk-maple-prod'
+      k8s-workload-type: CronJob
+      k8s-container-restart-policy: Never
+      k8s-cronjob-schedule: "30 9 * * *" #Every day 2:30 AM PST (9:30AM UTC)
+      k8s-irsa-role-arn: 'arn:aws:iam::969378265367:role/fin-data-integration-k8s-access-role-prod'
+      k8s-requests-memory: '8.0Gi'
+      k8s-requests-cpu: '1000m'
+      k8s-includes-service: false
+      k8s-namespace: 'app09831'
+      k8s-min-replicas: 1
+      k8s-max-replicas: 1
+      k8s-env-vars: |
+        [
+          { "name": "ENV_NAME", "value": "prod" },
+          { "name": "SPRING_PROFILES_ACTIVE", "value": "prod" },
+          { "name": "APP_ID", "value": "APP09831" },
+          { "name": "AWS_SOURCE_BUCKET", "value": "app09831-ertm-transaction-source-prod" },
+          { "name": "AWS_PROCESSED_BUCKET", "value": "app09831-ertm-transaction-processed-prod" },
+          { "name": "FILE_PROCESSING_BATCH_SIZE", "value": "40000" }        
+        ]
+      application-secrets-template: |
+        env:NEW_RELIC_LICENSE_KEY = ${vault:prod/APP09831-infrastructure NEW_RELIC_LICENSE_KEY}
+        env:AURORA_POSTGRESQL_DATABASE_ENDPOINT = fin-data-integration-cluster-prod.cluster-cx664c8q0d16.us-west-2.rds.amazonaws.com
+        env:AURORA_DATABASE_NAME = ${vault:prod/APP09831-ertm-transaction-consumer-service PROD_AURORA_DATABASE_NAME}
+        env:AURORA_POSTGRESQL_USERNAME = ${vault:prod/APP09831-ertm-transaction-consumer-service PROD_AURORA_SERVICE_USERNAME}
+        env:AURORA_POSTGRESQL_PASSWORD = ${vault:prod/APP09831-ertm-transaction-consumer-service PROD_AURORA_SERVICE_PASSWORD}

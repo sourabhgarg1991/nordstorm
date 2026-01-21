@@ -1,0 +1,110 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'com.jfrog.artifactory' version '6.0.2'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.diffplug.spotless' version '8.0.0'
+}
+
+group = 'com.nordstrom.finance.dataintegration.common'
+version = '1.0.2'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+ext {
+    lombokVersion = '1.18.36'
+    springBootVersion = '3.5.4'
+    log4jVersion = '2.25.2'
+    dogstatsdVersion = '4.4.3'
+
+    junitVersion = '5.11.4'
+    mockitoVersion = '5.15.2'
+    awsSdkVersion2 = '2.30.33'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.boot:spring-boot-dependencies:${springBootVersion}"
+    }
+}
+
+configurations {
+    configureEach {
+        // Exclude Spring Boot's default logging to avoid conflicts with Log4j2
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+        exclude group: 'ch.qos.logback', module: 'logback-classic'
+    }
+}
+
+dependencies {
+    // Lombok
+    implementation "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    // Datadog StatsD client for metrics
+    implementation "com.datadoghq:java-dogstatsd-client:${dogstatsdVersion}"
+
+    // Logging dependencies
+    implementation 'org.slf4j:slf4j-api'
+    implementation "org.apache.logging.log4j:log4j-api:${log4jVersion}"
+    implementation "org.apache.logging.log4j:log4j-core:${log4jVersion}"
+    implementation "org.apache.logging.log4j:log4j-slf4j2-impl:${log4jVersion}"
+
+    //AWS SDK
+    implementation("software.amazon.awssdk:s3:${awsSdkVersion2}")
+    implementation("software.amazon.awssdk:sts:${awsSdkVersion2}")
+    implementation("software.amazon.awssdk:s3-transfer-manager:${awsSdkVersion2}")
+
+    // Test dependencies
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation 'org.assertj:assertj-core:3.27.6'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            groupId = "${project.group}"
+            artifactId = 'data-integration-common'
+            version = "${project.version}"
+        }
+    }
+}
+
+artifactory {
+    contextUrl = 'https://artifactory.nordstrom.com/artifactory/'
+    publish {
+        repository {
+            repoKey = 'gradle-local'
+            username = findProperty('artifactoryUsername') ?: ''
+            password = findProperty('artifactoryPassword') ?: ''
+        }
+        defaults {
+            publications('mavenJava')
+            publishArtifacts = true
+        }
+    }
+}
+
+spotless {
+    java {
+        target 'src/*/java/**/*.java'
+        googleJavaFormat('1.28.0')
+        removeUnusedImports()
+    }
+}
+
+tasks.named('publish') {
+    dependsOn artifactoryPublish
+}

@@ -1,0 +1,192 @@
+name: 'Transaction Aggregation Load Test'
+description: 'Inserts test data, triggers CronJob, validates results, and cleans up for multiple transaction types'
+
+inputs:
+  app-id:
+    description: 'Application ID'
+    required: true
+  app-name:
+    description: 'Application name (base CronJob name)'
+    required: true
+  namespace:
+    description: 'Kubernetes namespace'
+    required: true
+  cloud-identifier:
+    description: 'Cloud account identifier'
+    required: true
+  nsk-cluster:
+    description: 'NSK cluster name'
+    required: true
+  aurora-endpoint:
+    description: 'Aurora PostgreSQL endpoint'
+    required: true
+  vault-url:
+    description: 'Vault URL for secrets'
+    required: true
+  test-data-count:
+    description: 'Number of test transactions to insert per type'
+    required: true
+  transaction-types:
+    description: 'Transaction types comma-separated (retail,restaurant,marketplace,promotion)'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        pip install -r .github/load-test/scripts/requirements.txt
+
+    - name: Fetch Database Secrets from Vault
+      id: db-secrets
+      uses: Nordstrom-Internal/APP02944-vault-extension/vault-output@v0
+      with:
+        secrets: |
+          nonprod/${{ inputs.app-id }}-transaction-aggregation-service NONPROD_AURORA_TEST_USERNAME
+          nonprod/${{ inputs.app-id }}-transaction-aggregation-service NONPROD_AURORA_TEST_PASSWORD
+          nonprod/${{ inputs.app-id }}-transaction-aggregation-service AURORA_TEST_DATABASE_NAME
+        vault-auth-role: ${{ inputs.app-id }}
+        vault-url: ${{ inputs.vault-url }}
+
+    - name: Process All Transaction Types
+      shell: bash
+      env:
+        DB_HOST: ${{ inputs.aurora-endpoint }}
+        DB_NAME: ${{ steps.db-secrets.outputs.AURORA_TEST_DATABASE_NAME }}
+        DB_USER: ${{ steps.db-secrets.outputs.NONPROD_AURORA_TEST_USERNAME }}
+        DB_PASSWORD: ${{ steps.db-secrets.outputs.NONPROD_AURORA_TEST_PASSWORD }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        APP_NAME: ${{ inputs.app-name }}
+        NAMESPACE: ${{ inputs.namespace }}
+        TEST_COUNT: ${{ inputs.test-data-count }}
+      run: |
+        IFS=',' read -ra TYPES <<< "${{ inputs.transaction-types }}"
+        
+        for TYPE in "${TYPES[@]}"; do
+          TYPE=$(echo $TYPE | xargs)  # Trim whitespace
+          echo "========================================="
+          echo "Processing transaction type: ${TYPE}"
+          echo "========================================="
+          
+          # Map transaction type to config prefix
+          case "${TYPE}" in
+            retail)
+              CONFIG_PREFIX="JWN_SALES_RETAIL"
+              ;;
+            restaurant)
+              CONFIG_PREFIX="JWN_SALES_RESTAURANT"
+              ;;
+            marketplace)
+              CONFIG_PREFIX="JWN_SALES_MARKETPLACE"
+              ;;
+            promotion)
+              CONFIG_PREFIX="JWN_SALES_PROMO"
+              ;;
+            *)
+              echo "❌ Unknown transaction type: ${TYPE}"
+              exit 1
+              ;;
+          esac
+          
+          echo "1. Verifying ${CONFIG_PREFIX} aggregation configuration..."
+          python .github/load-test/scripts/verify_config.py --config-prefix "${CONFIG_PREFIX}"
+          
+          echo "2. Inserting ${TEST_COUNT} test ${TYPE} transactions..."
+          python .github/load-test/scripts/insert_${TYPE}_test_data.py \
+            --count ${TEST_COUNT} \
+            --output-file /tmp/test-data-${TYPE}.json
+          
+          echo "3. Triggering CronJob..."
+          CRONJOB_NAME="${APP_NAME}"
+          
+          # Verify CronJob exists
+          if ! kubectl -n ${NAMESPACE} get cronjob/${CRONJOB_NAME} &>/dev/null; then
+            echo "❌ Error: CronJob '${CRONJOB_NAME}' not found in namespace '${NAMESPACE}'"
+            echo "Available CronJobs:"
+            kubectl -n ${NAMESPACE} get cronjobs
+            exit 1
+          fi
+
+          echo "✓ CronJob '${CRONJOB_NAME}' found"
+          
+          TIMESTAMP=$(date +%s)
+          JOB_NAME="load-test-${TYPE}-${TIMESTAMP}"
+          
+          kubectl -n ${NAMESPACE} create job --from=cronjob/${CRONJOB_NAME} ${JOB_NAME}
+          echo "Job ${JOB_NAME} created"
+          
+          # Give the job a moment to start
+          sleep 5
+          
+          # Check initial job status
+          echo "Initial job status:"
+          kubectl -n ${NAMESPACE} get job/${JOB_NAME} || echo "Could not get job status"
+          
+          # Check if pod was created
+          echo "Checking for pod creation..."
+          kubectl -n ${NAMESPACE} get pods --selector=job-name=${JOB_NAME} || echo "No pods found yet"
+          
+          echo "4. Waiting for job completion..."
+          
+          # Wait for job with timeout and capture status
+          if kubectl -n ${NAMESPACE} wait job/${JOB_NAME} --for=condition=complete --timeout=15m; then
+            echo "✓ Job completed successfully"
+          else
+            echo "❌ Job did not complete within timeout. Checking job status..."
+            
+            # Get job status
+            echo "Job Status:"
+            kubectl -n ${NAMESPACE} describe job/${JOB_NAME} || echo "Could not describe job"
+            
+            # Get pod status
+            echo ""
+            echo "Pod Status:"
+            POD_NAME=$(kubectl -n ${NAMESPACE} get pods --selector=job-name=${JOB_NAME} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$POD_NAME" ]; then
+              echo "Pod: ${POD_NAME}"
+              kubectl -n ${NAMESPACE} describe pod/${POD_NAME} || echo "Could not describe pod"
+              
+              echo ""
+              echo "Pod Logs (last 100 lines):"
+              kubectl -n ${NAMESPACE} logs ${POD_NAME} --tail=100 || echo "Could not get pod logs"
+            else
+              echo "No pod found for job ${JOB_NAME}"
+            fi
+            
+            echo ""
+            echo "❌ Load test failed - job did not complete"
+            exit 1
+          fi
+          
+          echo "5. Validating database state..."
+          if [ "$TYPE" = "promotion" ]; then
+            FILE_PATTERN="PROMO"
+          else
+            FILE_PATTERN="$(echo ${TYPE} | tr '[:lower:]' '[:upper:]')"
+          fi
+          
+          python .github/load-test/scripts/validate_database_state_multi.py \
+            --test-data-file /tmp/test-data-${TYPE}.json \
+            --file-pattern "${FILE_PATTERN}"
+          
+          echo "6. Cleaning up test data..."
+          python .github/load-test/scripts/cleanup_test_data.py \
+            --test-data-file /tmp/test-data-${TYPE}.json || echo "Cleanup completed with warnings"
+          
+          echo "7. Cleaning up Kubernetes job..."
+          kubectl -n ${NAMESPACE} delete job ${JOB_NAME} --wait=false || echo "Job cleanup completed"
+          
+          echo "✓ ${TYPE} load test completed successfully"
+          echo ""
+        done
+        
+        echo "========================================="
+        echo "All load tests completed successfully!"
+        echo "========================================="
+

@@ -1,0 +1,22 @@
+metrics:
+  constantTags:
+    - "environment:${SPRING_PROFILES_ACTIVE}"
+    - "appid:APP09831"
+    - "service_name:promotion-transaction-consumer-service"
+    - "tier:2"
+
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+
+app:
+  gcp:
+    credentials-location: "/opt/gcp-credentials-prod.json"
+
+async:
+  gcp-processor:
+    core-pool-size: 8
+    max-pool-size: 16
+    queue-capacity: 100

@@ -1,0 +1,49 @@
+name: 'Run Gradle Integration Tests'
+description: 'Checks out code, sets up credentials, and runs Gradle integration tests.'
+
+inputs:
+  app-id:
+    description: "Application ID"
+    required: true
+  vault-secrets-string:
+    description: "Multi-line string of vault secrets to be used in the integration tests"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get repository metadata
+      id: metadata
+      uses: Nordstrom-Internal/app02944-repository-metadata@v1.0.0
+
+    - name: Fetch Integration Test Secrets from Vault
+      id: integration-test-secrets
+      uses: Nordstrom-Internal/APP02944-vault-extension/vault-output@v0
+      with:
+        secrets: ${{ inputs.vault-secrets-string }}
+        vault-auth-role: ${{ steps.metadata.outputs.app-id }}
+        vault-url: https://nonprodendpoint-to-prodvault.nordstrom.app:8200
+
+    - name: Fetch Artifactory token
+      id: artifactory
+      uses: jfrog/setup-jfrog-cli@v4
+      env:
+        JF_URL: https://artifactory.nordstrom.com/
+      with:
+        oidc-provider-name: github
+        oidc-audience: jwn
+
+    - name: Run Gradle init
+      uses: Nordstrom-Internal/APP08365-sp-extension-gradle/gradle-init@v0.3.0
+      with:
+        artifactory-username: ${{ steps.artifactory.outputs.oidc-user }}
+        artifactory-password: ${{ steps.artifactory.outputs.oidc-token }}
+
+    - name: Run Integration Tests
+      shell: bash
+      env:
+        AURORA_TEST_POSTGRESQL_USERNAME: ${{ steps.integration-test-secrets.outputs.NONPROD_AURORA_TEST_USERNAME }}
+        AURORA_TEST_POSTGRESQL_PASSWORD: ${{ steps.integration-test-secrets.outputs.NONPROD_AURORA_TEST_PASSWORD }}
+        AURORA_TEST_DATABASE_NAME: ${{ steps.integration-test-secrets.outputs.AURORA_TEST_DATABASE_NAME }}
+        AURORA_TEST_POSTGRESQL_DATABASE_ENDPOINT: "fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com"
+      run: ./gradlew integrationTest

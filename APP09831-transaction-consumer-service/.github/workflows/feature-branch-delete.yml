@@ -1,0 +1,38 @@
+name: Delete NSK Dev Environment (Feature Branch) Workflow - APP09831
+
+on:
+  workflow_dispatch:
+    inputs:
+      k8s-resource-label-selector:
+        description: "Label selector for the K8S resources to delete"
+        required: false
+  delete:
+  pull_request:
+    types: [closed]
+    branches-ignore:
+      - main
+      - release/nonprod
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nsk-delete-dev:
+    name: Delete K8s Resources in NSK - Dev
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-delete.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-nonprod
+      github-job-environment: dev
+      deployment-environment: dev
+      app-id: APP09831
+      app-name: transaction-consumer-service
+      cloud-identifier: '007979315855'
+      cloud-region: us-west-2
+      nsk-cluster: nsk-maple-nonprod
+      k8s-resource-label-selector: ${{ inputs.k8s-resource-label-selector }}

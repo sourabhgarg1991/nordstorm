@@ -1,0 +1,20 @@
+name: Build Library (Non-Prod)
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches-ignore:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gradle-build:
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: "8"

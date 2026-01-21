@@ -1,0 +1,14 @@
+
+metrics:
+  constantTags:
+    - "environment:prod"
+    - "appid:APP09831"
+    - "service_name:aggregation-service"
+    - "tier:3"
+
+app:
+  kafka:
+    retry:
+      topic.suffix: -di-retry-0
+    dlt:
+      topic.suffix: -di-dlt

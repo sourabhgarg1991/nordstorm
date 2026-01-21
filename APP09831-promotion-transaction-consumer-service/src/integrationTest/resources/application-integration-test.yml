@@ -1,0 +1,70 @@
+# Integration Test Configuration
+# This Metrics is mocked in integration test - dummy tags are provided here for completeness
+metrics:
+  constantTags:
+    - "environment:integrationTest"
+    - "appid:APP09831"
+    - "service_name:promotion-transaction-consumer-service"
+    - "tier:2"
+
+spring:
+  application:
+    name: promotion-transaction-consumer-service-integration-test
+  main:
+    web-application-type: NONE
+    lazy-initialization: true
+  task:
+    scheduling:
+      enabled: false
+  jpa:
+    database: POSTGRESQL
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc.batch_size: 100
+        order_inserts: true
+        show_sql: false
+    show-sql: false
+  
+  # Aurora PostgreSQL Test Database Connection
+  datasource:
+    url: jdbc:postgresql://${AURORA_TEST_POSTGRESQL_DATABASE_ENDPOINT}:5432/${AURORA_TEST_DATABASE_NAME}
+    username: ${AURORA_TEST_POSTGRESQL_USERNAME}
+    password: ${AURORA_TEST_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+
+# GCP Configuration (used by mocked BigQuery)
+# Note: credentials-location is not used in tests since BigQuery is mocked
+app:
+  gcp:
+    start-date-override: "2025-01-01T00:00:00Z"
+    end-date-override: "2025-01-31T23:59:59Z"
+    nap-project-id: test-nap-project
+    project-id: test-project
+    dataset: test_dataset
+    table-name: test_promotion_table
+    page-size: 1000
+    credentials-location: "not-used-in-tests"
+
+# Thread Pool Configuration
+async:
+  gcp-processor:
+    core-pool-size: 2
+    max-pool-size: 4
+    queue-capacity: 20
+
+# Logging - Enable detailed Spring context loading logs
+logging:
+  level:
+    root: INFO
+    com.nordstrom.finance.dataintegration.promotion: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.springframework.context: DEBUG
+    org.springframework.beans.factory: DEBUG
+    org.springframework.test.context: DEBUG
+    org.springframework.boot.test: DEBUG

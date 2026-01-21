@@ -1,0 +1,212 @@
+plugins {
+    id 'java'
+    id 'idea'
+    id 'jacoco'
+    id 'org.springframework.boot' version '3.5.4'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.diffplug.spotless' version '7.0.4'
+}
+
+ext {
+    lombokVersion = '1.18.38'
+    log4jVersion = '2.24.3'
+    junitVersion = '5.13.0'
+    mockitoVersion = '5.18.0'
+    testcontainersVersion = '1.21.3'
+    dataIntegrationCommon = '1.0.1'
+}
+
+group = "com.nordstrom.finance.dataintegration.promotion"
+version = "1.0.0"
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    // lombok
+    implementation("org.projectlombok:lombok:${lombokVersion}")
+    annotationProcessor("org.projectlombok:lombok:${lombokVersion}")
+    //  log
+    implementation("org.slf4j:slf4j-api:2.0.12")
+    implementation("org.apache.logging.log4j:log4j-api:${log4jVersion}")
+    implementation("org.apache.logging.log4j:log4j-core:${log4jVersion}")
+    implementation("org.apache.logging.log4j:log4j-slf4j2-impl:${log4jVersion}")
+    // spring
+    implementation("org.springframework.boot:spring-boot-starter")
+    implementation("org.springframework.boot:spring-boot-starter-web")
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    implementation("org.aspectj:aspectjweaver:1.9.19")
+    // common
+    implementation("com.nordstrom.finance.dataintegration.common:data-integration-common:${dataIntegrationCommon}")
+    // postgres
+    runtimeOnly("org.postgresql:postgresql:42.7.3")
+    // GCP
+    // TODO: need to check if the bigquery version can be updated to remove the workaround for CVE-2024-52338
+    implementation 'com.google.cloud:google-cloud-bigquery:2.53.0'
+    implementation("org.apache.arrow:arrow-format:18.3.0"){
+        because("CVE-2024-52338 :: remove once google-cloud-bigquery version is updated")
+    }
+    implementation("org.apache.arrow:arrow-memory-core:18.3.0"){
+        because("CVE-2024-52338 :: remove once google-cloud-bigquery version is updated")
+    }
+    runtimeOnly("org.apache.arrow:arrow-memory-netty:18.3.0"){
+        because("CVE-2024-52338 :: remove once google-cloud-bigquery version is updated")
+    }
+    implementation("org.apache.arrow:arrow-vector:18.3.0"){
+        because("CVE-2024-52338 :: remove once google-cloud-bigquery version is updated")
+    }
+    implementation("io.projectreactor.netty:reactor-netty-http:1.2.8"){
+        because("CVE-2024-52338 :: remove once google-cloud-bigquery version is updated")
+    }
+    // test
+    testImplementation("org.springframework.boot:spring-boot-test")
+    testImplementation("org.junit.jupiter:junit-jupiter:${junitVersion}")
+    testImplementation("org.mockito:mockito-junit-jupiter:${mockitoVersion}")
+    testImplementation("org.mockito:mockito-core:${mockitoVersion}")
+    testImplementation("org.assertj:assertj-core:3.6.1")
+    runtimeOnly("org.junit.platform:junit-platform-launcher:1.12.2")
+    testCompileOnly("org.projectlombok:lombok:${lombokVersion}")
+    testAnnotationProcessor("org.projectlombok:lombok:${lombokVersion}")
+}
+
+configurations {
+    configureEach {
+        // remove Boot's default logging (Logback + starter-logging)
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+        exclude group: 'ch.qos.logback', module: 'logback-classic'
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// ============================================
+// Integration Test Configuration
+// ============================================
+
+sourceSets {
+    integrationTest {
+        java {
+            compileClasspath += main.output + test.output
+            runtimeClasspath += main.output + test.output
+            srcDir file('src/integrationTest/java')
+        }
+        resources.srcDir file('src/integrationTest/resources')
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+    integrationTestImplementation('org.springframework.boot:spring-boot-starter-test')
+    integrationTestImplementation("org.testcontainers:postgresql:${testcontainersVersion}")
+    integrationTestImplementation("org.testcontainers:junit-jupiter:${testcontainersVersion}")
+    integrationTestImplementation("org.apache.commons:commons-compress:1.27.1") {
+        because("CVE-2024-25710, CVE-2024-26308 :: testcontainers transitive dependency vulnerability fix")
+    }
+    integrationTestImplementation("org.apache.commons:commons-lang3:3.19.0") {
+        because("CVE-2025-48924 :: testcontainers transitive dependency vulnerability fix")
+    }
+    integrationTestImplementation("org.awaitility:awaitility:4.2.0")
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter test
+    useJUnitPlatform()
+    jvmArgs(
+            '-XX:+EnableDynamicAgentLoading',
+            '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+            '--add-opens', 'java.base/java.util=ALL-UNNAMED'
+    )
+    testLogging {
+        events = ["standardOut", "started", "passed", "skipped", "failed"]
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+    reports {
+        html.outputLocation = layout.buildDirectory.dir("reports/integration-tests")
+    }
+}
+
+processIntegrationTestResources {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+idea {
+    module {
+        testSources.from(sourceSets.integrationTest.java.srcDirs)
+        testResources.from(sourceSets.integrationTest.resources.srcDirs)
+    }
+}
+
+// ============================================
+// Unit Test Configuration
+// ============================================
+
+jacoco {
+    toolVersion = "0.8.13"
+    reportsDirectory = layout.buildDirectory.dir("reports/jacoco/test")
+}
+
+tasks.register("coverage") {
+    dependsOn {
+        jacocoTestReport
+    }
+    doLast {
+        println "Test coverage report: " + jacocoTestReport.reports.getHtml().getEntryPoint().toURI()
+    }
+}
+
+def jacocoExcludeList = []
+
+jacocoTestReport {
+    reports {
+        csv.required = true
+        xml.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/test')
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: jacocoExcludeList)
+        }))
+    }
+}
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                minimum = 0.8
+            }
+        }
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: jacocoExcludeList)
+        }))
+    }
+}
+
+// ============================================
+// Format Configuration
+// ============================================
+
+spotless {
+    java {
+        googleJavaFormat('1.17.0')
+        removeUnusedImports()
+    }
+}

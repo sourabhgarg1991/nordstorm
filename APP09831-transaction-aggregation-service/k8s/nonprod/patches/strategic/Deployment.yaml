@@ -1,0 +1,27 @@
+spec:
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    spec:
+      containers:
+        - name: application
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTP
+            failureThreshold: 3
+            successThreshold: 1
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTP
+            failureThreshold: 3
+            successThreshold: 1
+            initialDelaySeconds: 120
+            timeoutSeconds: 15

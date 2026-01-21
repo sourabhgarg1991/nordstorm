@@ -1,0 +1,105 @@
+name: Nonprod NSK Deployment Workflow - APP09831
+
+on:
+  push:
+    branches:
+      - release/nonprod
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gradle-build:
+    name: Gradle Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: 8
+
+  integration-test:
+    name: Integration Test
+    needs: gradle-build
+    runs-on: linux-nonprod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Integration Tests
+        uses: ./.github/integration-test
+        with:
+          app-id: APP09831
+          vault-secrets-string: |-
+            nonprod/APP09831-transaction-consumer-service NONPROD_AURORA_TEST_USERNAME
+            nonprod/APP09831-transaction-consumer-service NONPROD_AURORA_TEST_PASSWORD
+            nonprod/APP09831-transaction-consumer-service AURORA_TEST_DATABASE_NAME
+
+  docker-build:
+    needs: [gradle-build, integration-test]
+    name: Docker Container Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/docker.yml@v7
+    secrets: inherit
+    with:
+      app-name: transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.gradle-build.outputs.build-version }}
+
+  nsk-deploy-nonprod:
+    needs: [docker-build, integration-test]
+    name: Deploy to NSK - Nonprod
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-deploy.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-nonprod
+      github-job-environment: nonprod
+      deployment-environment: nonprod
+      app-name: transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.docker-build.outputs.app-version }}
+      container-image-name: ${{ needs.docker-build.outputs.image-name }}
+      container-image-tag: ${{ needs.docker-build.outputs.image-tag }}
+      cloud-provider: aws
+      cloud-region: us-west-2
+      cloud-identifier: '007979315855'
+      deployment-target: nskapp
+      nsk-cluster: nsk-maple-nonprod
+      k8s-includes-service: false
+      k8s-namespace: app09831
+      k8s-requests-memory: '1000Mi'
+      k8s-rollout-status-timeout: 10
+      k8s-irsa-role-arn: 'arn:aws:iam::007979315855:role/fin-data-integration-k8s-access-role-nonprod'
+      k8s-env-vars: |
+        [
+          { "name": "ENV_NAME", "value": "nonprod" },
+          { "name": "SPRING_PROFILES_ACTIVE", "value": "nonprod" },
+          { "name": "APP_ID", "value": "APP09831" },
+          { "name": "SCHEMA_REGISTRY_URL", "value": "https://schema-registry-nonprod-us-west-2.nordstromaws.app" },
+          { "name": "CONFLUENT_CLOUD_BOOTSTRAP_SERVER", "value": "lkc-09v3v2.dom8pmr03gy.us-west-2.aws.confluent.cloud:9092" },
+          { "name": "CONFLUENT_CLOUD_CLUSTER_ID", "value": "lkc-09v3v2" },
+          { "name": "CONFLUENT_CLOUD_IDENTITY_POOL_ID", "value": "pool-8XvNY" },
+          { "name": "OAUTH_ENDPOINT_URL", "value": "https://nordstrom.oktapreview.com/oauth2/ausud5wgoxiBdIYLX0h7/v1/token" },
+          { "name": "SDM_RETAIL_TRANSACTION_TOPIC_NAME", "value": "customer-financial-retail-transaction-operational-avro" },
+          { "name": "SDM_RESTAURANT_TRANSACTION_TOPIC_NAME", "value": "customer-financial-restaurant-transaction-operational-avro" },
+          { "name": "SDM_CONSUMER_GROUP_ID", "value": "APP09831-data-integration-consumer-nonprod" },
+          { "name": "AURORA_POSTGRESQL_DATABASE_ENDPOINT", "value": "fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com" },
+          { "name": "FORTKNOX_REDEMPTION_KEYSTORE", "value": "/etc/keystore/keystore.jks" },
+          { "name": "FORTKNOX_REDEMPTION_API_URL", "value": "https://redemption.nonprod.fortknox.vip.nordstrom.com" }
+        ]
+      application-secrets-template: |
+        env:NEW_RELIC_LICENSE_KEY                        = ${vault:nonprod/APP09831-transaction-consumer-service NEW_RELIC_LICENSE_KEY}
+        env:AURORA_DATABASE_NAME                         = ${vault:nonprod/APP09831-transaction-consumer-service NONPROD_AURORA_DATABASE_NAME}
+        env:AURORA_POSTGRESQL_USERNAME                   = ${vault:nonprod/APP09831-transaction-consumer-service NONPROD_AURORA_SERVICE_USERNAME}
+        env:AURORA_POSTGRESQL_PASSWORD                   = ${vault:nonprod/APP09831-transaction-consumer-service NONPROD_AURORA_SERVICE_PASSWORD}
+        env:CONFLUENT_CLOUD_OAUTH_CLIENT_ID              = ${vault:nonprod/APP09831-transaction-consumer-service CONFLUENT_CLOUD_OAUTH_CLIENT_ID}
+        env:CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET          = ${vault:nonprod/APP09831-transaction-consumer-service CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET}
+        env:IS_COMMISSION_REDEMPTION_ENABLED             = ${vault:nonprod/APP09831-transaction-consumer-service IS_COMMISSION_REDEMPTION_ENABLED}
+        env:FORTKNOX_REDEMPTION_KEYSTORE_PASSWORD        = ${vault:nonprod/APP09831-transaction-consumer-service FORTKNOX_REDEMPTION_KEYSTORE_PASSWORD}
+        file:/etc/keystore/keystore.jks:base64           = ${vault:nonprod/APP09831-transaction-consumer-service FORTKNOX_REDEMPTION_KEYSTORE_BASE64}

@@ -1,0 +1,6 @@
+metrics:
+  constantTags:
+    - "environment:test"
+    - "appid:APP09831"
+    - "service_name:transaction-aggregation-service"
+    - "tier:2"

@@ -1,0 +1,36 @@
+name: Dev Destroy Workflow
+on:
+  delete:
+  pull_request:
+    types:
+      - 'closed'
+    branches-ignore:
+      - 'main'
+      - 'release/nonprod'
+  workflow_dispatch:
+
+concurrency:
+  group: dev-destroy-workflow-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform-destroy:
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-destroy.yml@v7
+    secrets: inherit
+    with:
+      backend-type: 's3'
+      cloud-identifier: '007979315855'
+      cloud-provider: 'aws'
+      cloud-region: 'us-west-2'
+      config-directory: 'terraform'
+      github-job-environment: 'dev'
+      github-job-runs-on: 'linux-nonprod'
+      input-variables: |
+        app_id = "app09831"
+        app_name = "Infrastructure"
+        environment = "${{ github.head_ref || github.ref_name }}"
+        env_app_name = "Infrastructure-${{ github.head_ref || github.ref_name }}"

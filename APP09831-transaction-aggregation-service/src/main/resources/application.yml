@@ -1,0 +1,71 @@
+applicationId: ${APP_ID}
+
+metrics:
+  hostname: gostatsd.kube-system.svc
+  port: 8128
+  prefix: fintech.dataIntegration.transactionaggregator
+  constantTags:
+    - "environment:dev"
+    - "appid:APP09831"
+    - "service_name:transaction-aggregation-service"
+    - "tier:2"
+
+management:
+  endpoints:
+    health:
+      probes:
+        enabled: true
+    web:
+      exposure:
+        include: health, beans, loggers
+      base-path: /
+  health:
+    path: /health
+    probes:
+      enabled: true
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+
+spring:
+  main:
+    web-application-type: NONE
+  application:
+    name: transaction-aggregation-service
+  jpa:
+    open-in-view: false
+    database: POSTGRESQL
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    generate-ddl: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 2000
+        order_inserts: true
+  datasource:
+    url: jdbc:postgresql://${AURORA_POSTGRESQL_DATABASE_ENDPOINT}:5432/${AURORA_DATABASE_NAME}
+    username: ${AURORA_POSTGRESQL_USERNAME}
+    password: ${AURORA_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      maxLifetime: 2000000
+      connectionTimeout: 30000
+  task:
+    execution:
+      pool:
+        core-size: 3
+        max-size: 5
+        queue-capacity: 20
+        keep-alive: 10s
+
+aws:
+  region: us-west-2
+  s3:
+    bucket:
+      upload: ${ABSTRACTION_SERVICE_UPLOAD_BUCKET}

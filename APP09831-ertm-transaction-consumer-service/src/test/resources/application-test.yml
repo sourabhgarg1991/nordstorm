@@ -1,0 +1,54 @@
+metrics:
+  constantTags:
+    - "environment:test"
+    - "appid:APP09831"
+    - "service_name:ertm-transaction-consumer-service"
+    - "tier:2"
+
+spring:
+  main:
+    web-application-type: NONE
+  application:
+    name: ertm-transaction-consumer-service
+  jpa:
+    open-in-view: false
+    database: POSTGRESQL
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    generate-ddl: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 2000
+        order_inserts: true
+  datasource:
+    url: jdbc:postgresql://${AURORA_POSTGRESQL_DATABASE_ENDPOINT}:5432/${AURORA_DATABASE_NAME}
+    username: ${AURORA_POSTGRESQL_USERNAME}
+    password: ${AURORA_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      maxLifetime: 2000000
+      connectionTimeout: 30000
+  task:
+    execution:
+      pool:
+        core-size: 3
+        max-size: 5
+        queue-capacity: 20
+        keep-alive: 10s
+
+
+aws:
+  s3:
+    bucket:
+      source: app09831-ertm-transaction-source-nonprod
+      processed: app09831-ertm-transaction-processed-nonprod
+
+file:
+  processing:
+    batch:
+      size: 10

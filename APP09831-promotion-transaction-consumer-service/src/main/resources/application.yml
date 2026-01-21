@@ -1,0 +1,84 @@
+applicationId: ${APP_ID}
+
+metrics:
+  hostname: gostatsd.kube-system.svc
+  port: 8128
+  prefix: fintech.dataIntegration.promotionTransaction
+  constantTags:
+    - "environment:${SPRING_PROFILES_ACTIVE}"
+    - "appid:APP09831"
+    - "service_name:promotion-transaction-consumer-service"
+    - "tier:2"
+
+management:
+  endpoints:
+    health:
+      probes:
+        enabled: true
+    web:
+      exposure:
+        include: health, beans, loggers
+      base-path: /
+  health:
+    path: /health
+    probes:
+      enabled: true
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+
+spring:
+  main:
+    web-application-type: NONE
+  application:
+    name: promotion-transaction-consumer-service
+  jpa:
+    open-in-view: false
+    database: POSTGRESQL
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    generate-ddl: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 2000
+        order_inserts: true
+  datasource:
+    url: jdbc:postgresql://${AURORA_POSTGRESQL_DATABASE_ENDPOINT}:5432/${AURORA_DATABASE_NAME}
+    username: ${AURORA_POSTGRESQL_USERNAME}
+    password: ${AURORA_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      maxLifetime: 2000000
+      connectionTimeout: 30000
+  task:
+    execution:
+      pool:
+        core-size: 3
+        max-size: 5
+        queue-capacity: 20
+        keep-alive: 10s
+
+app:
+  gcp:
+    start-date-override: ${START_DATE_OVERRIDE:1970-01-01T00:00:00Z}
+    end-date-override: ${END_DATE_OVERRIDE:1970-01-01T00:00:00Z}
+    nap-project-id: ${PROMO_SOURCE_GCP_PROJECT_ID}
+    project-id: ${GCP_PROJECT_ID}
+    dataset: ${PROMO_SOURCE_GCP_DATASET}
+    table-name: ${PROMO_SOURCE_GCP_TABLE_NAME}
+    page-size: ${GCP_PROMOTION_DATA_PAGE_SIZE}
+    credentials-location: "/opt/gcp-credentials-nonprod.json"
+
+async:
+  gcp-processor:
+    core-pool-size: 4
+    max-pool-size: 8
+    queue-capacity: 50
+    keep-alive-seconds: 60
+    await-termination-seconds: 120

@@ -1,0 +1,17 @@
+app:
+  gcp:
+    start-date-override: "2023-01-01T00:00:00Z"
+    end-date-override: "2023-12-31T23:59:59Z"
+    nap-project-id: "test-nap-project-id"
+    project-id: "test-main-project-id"
+    dataset: "test-dataset"
+    table-name: "test-table"
+    page-size: 1000
+    credentials-location: "/test/path/to/credentials.json"
+
+metrics:
+  constantTags:
+    - "environment:test"
+    - "appid:APP09831"
+    - "service_name:promotion-transaction-consumer-service"
+    - "tier:2"

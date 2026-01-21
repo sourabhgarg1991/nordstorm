@@ -1,0 +1,8 @@
+
+metrics:
+  constantTags:
+    - "environment:prod"
+    - "appid:APP09831"
+    - "service_name:transaction-consumer-service"
+    - "tier:3"
+

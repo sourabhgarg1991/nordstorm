@@ -1,0 +1,53 @@
+name: Non-Prod Flyway Migration
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment for migration as nonprod'
+        required: true
+        type: choice
+        options:
+          - 'nonprod'
+        default: 'nonprod'
+
+concurrency:
+  group: flyway-migration-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  flyway-migrate:
+    name: Flyway Migration - ${{ inputs.environment }}
+    runs-on: 'linux-nonprod'
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set Environment Variables
+        run: |
+          echo "ENV_PREFIX=NONPROD" >> $GITHUB_ENV
+          echo "INCLUDE_TEST_DATABASE=true" >> $GITHUB_ENV
+
+      - name: Run Flyway Migration
+        uses: ./.github/flyway-migrate
+        with:
+          env: ${{ inputs.environment }}
+          vault-aurora-master-username: 'nonprod/APP09831-infrastructure NONPROD_AURORA_MASTER_USERNAME'
+          vault-aurora-master-password: 'nonprod/APP09831-infrastructure NONPROD_AURORA_MASTER_PASSWORD'
+          vault-aurora-service-username: 'nonprod/APP09831-infrastructure NONPROD_AURORA_SERVICE_USERNAME'
+          vault-aurora-service-password: 'nonprod/APP09831-infrastructure NONPROD_AURORA_SERVICE_PASSWORD'
+          vault-aurora-test-username: 'nonprod/APP09831-infrastructure NONPROD_AURORA_TEST_USERNAME'
+          vault-aurora-test-password: 'nonprod/APP09831-infrastructure NONPROD_AURORA_TEST_PASSWORD'
+
+      - name: Migration Summary
+        run: |
+          echo "Flyway migration completed successfully!"
+          echo "Environment: ${{ inputs.environment }}"
+          echo ""
+          echo "The following database is migrated:"
+          echo "- dataintegration (main database)"
+          echo "- dataintegration_test"

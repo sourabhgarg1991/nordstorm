@@ -1,0 +1,27 @@
+Configuration:
+  packages: com.nordstrom.financial.dataintegration.aggregation
+  Appenders:
+    Console:
+      - name: Console
+        PatternLayout:
+          pattern: "%d{ISO8601} %-5level [AppId = ${env:APP_ID}] [Class = %C]  %m%n%throwable{separator(|)}"
+        target: SYSTEM_OUT
+      - name: App
+        PatternLayout:
+          pattern: "%d{ISO8601} %-5level [AppId = ${env:APP_ID}] [Class = %C]  %m%n%throwable{separator(|)}"
+        target: SYSTEM_OUT
+  Loggers:
+    Root:
+      level: error
+      AppenderRef:
+        - ref: Console
+          level: error
+
+    Logger:
+      - name: com.nordstrom
+        additivity: false
+        level: info
+        AppenderRef:
+          - ref: App
+            level: info
+

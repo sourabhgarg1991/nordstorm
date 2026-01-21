@@ -1,0 +1,98 @@
+name: Non-Prod NSK Deployment Workflow - APP09831
+
+on: # only run this workflow for release/nonprod branches.
+  push:
+    branches:
+      - release/nonprod
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gradle-build:
+    name: Gradle Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: 8
+
+  integration-test:
+    name: Integration Test
+    needs: gradle-build
+    runs-on: linux-nonprod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Integration Tests
+        uses: ./.github/integration-test
+        with:
+          app-id: 'APP09831'
+          vault-secrets-string: |-
+            nonprod/APP09831-ertm-transaction-consumer-service NONPROD_AURORA_TEST_USERNAME
+            nonprod/APP09831-ertm-transaction-consumer-service NONPROD_AURORA_TEST_PASSWORD
+            nonprod/APP09831-ertm-transaction-consumer-service AURORA_TEST_DATABASE_NAME
+
+  docker-build:
+    needs: [gradle-build, integration-test]
+    name: Docker Container Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/docker.yml@v7
+    secrets: inherit
+    with:
+      app-name: ertm-transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.gradle-build.outputs.build-version }}
+
+  k8s-nskapp-deploy-nonprod-branch:
+    needs: docker-build
+    name: Deploy to NSK nonprod Branch
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-deploy.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-nonprod
+      github-job-environment: nonprod
+      deployment-environment: nonprod
+      app-name: 'ertm-transaction-consumer-service'
+      app-id: 'APP09831'
+      app-version: ${{ needs.docker-build.outputs.app-version }}
+      container-image-name: ${{ needs.docker-build.outputs.image-name }}
+      container-image-tag: ${{ needs.docker-build.outputs.image-tag }}
+      cloud-provider: 'aws'
+      cloud-region: 'us-west-2'
+      cloud-identifier: '007979315855'
+      deployment-target: 'nskapp'
+      nsk-cluster: 'nsk-maple-nonprod'
+      k8s-workload-type: CronJob
+      k8s-container-restart-policy: Never
+      k8s-cronjob-schedule: "30 9 * * *" #Every day 2:30 AM PST (9:30AM UTC)
+      k8s-irsa-role-arn: 'arn:aws:iam::007979315855:role/fin-data-integration-k8s-access-role-nonprod'
+      k8s-requests-memory: '8.0Gi'
+      k8s-requests-cpu: '300m'
+      k8s-includes-service: false
+      k8s-namespace: 'app09831'
+      k8s-min-replicas: 1
+      k8s-max-replicas: 1
+      k8s-env-vars: |
+        [
+          { "name": "ENV_NAME", "value": "nonprod" },
+          { "name": "SPRING_PROFILES_ACTIVE", "value": "nonprod" },
+          { "name": "APP_ID", "value": "APP09831" },
+          { "name": "AWS_SOURCE_BUCKET", "value": "app09831-ertm-transaction-source-nonprod" },
+          { "name": "AWS_PROCESSED_BUCKET", "value": "app09831-ertm-transaction-processed-nonprod" },
+          { "name": "FILE_PROCESSING_BATCH_SIZE", "value": "20000" }
+        ]
+      application-secrets-template: |
+        env:NEW_RELIC_LICENSE_KEY = ${vault:nonprod/APP09831-ertm-transaction-consumer-service NEW_RELIC_LICENSE_KEY}
+        env:AURORA_POSTGRESQL_DATABASE_ENDPOINT = fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com
+        env:AURORA_DATABASE_NAME = ${vault:nonprod/APP09831-ertm-transaction-consumer-service NONPROD_AURORA_DATABASE_NAME}
+        env:AURORA_POSTGRESQL_USERNAME = ${vault:nonprod/APP09831-ertm-transaction-consumer-service NONPROD_AURORA_SERVICE_USERNAME}
+        env:AURORA_POSTGRESQL_PASSWORD = ${vault:nonprod/APP09831-ertm-transaction-consumer-service NONPROD_AURORA_SERVICE_PASSWORD}

@@ -1,0 +1,97 @@
+applicationId: ${APP_ID}
+
+metrics:
+  hostname: gostatsd.kube-system.svc
+  port: 8128
+  prefix: fintech.dataIntegration.ertmTransaction
+  constantTags:
+    - "environment:${SPRING_PROFILES_ACTIVE}"
+    - "appid:APP09831"
+    - "service_name:ertm-transaction-consumer-service"
+    - "tier:2"
+
+management:
+  endpoints:
+    health:
+      probes:
+        enabled: true
+    web:
+      exposure:
+        include: health, beans, loggers
+      base-path: /
+  health:
+    path: /health
+    probes:
+      enabled: true
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+
+spring:
+  main:
+    web-application-type: NONE
+  application:
+    name: ertm-transaction-consumer-service
+  jpa:
+    open-in-view: false
+    database: POSTGRESQL
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    generate-ddl: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        id:
+          sequence:
+            increment_size_mismatch_strategy: LOG
+          optimizer:
+            pooled:
+              preferred: true
+        jdbc:
+          batch_size: 2000
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
+  datasource:
+    url: jdbc:postgresql://${AURORA_POSTGRESQL_DATABASE_ENDPOINT}:5432/${AURORA_DATABASE_NAME}
+    username: ${AURORA_POSTGRESQL_USERNAME}
+    password: ${AURORA_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      maxLifetime: 2000000
+      connectionTimeout: 30000
+    retry:
+      attempts: 3
+      initial:
+        delay: 1000
+      # Async retry: attempts with delays of 1min, 3.7min, 13.7min, 30min, 30min, 30min, 30min
+      async:
+        attempts: 7
+        delay:
+          millis: 60000
+          multiplier: 3.7
+          max: 1800000
+  task:
+    execution:
+      pool:
+        core-size: 3
+        max-size: 5
+        queue-capacity: 20
+        keep-alive: 10s
+
+
+aws:
+  region: us-west-2
+  s3:
+    bucket:
+      source: ${AWS_SOURCE_BUCKET}
+      processed: ${AWS_PROCESSED_BUCKET}
+
+file:
+  processing:
+    batch:
+      size: ${FILE_PROCESSING_BATCH_SIZE}

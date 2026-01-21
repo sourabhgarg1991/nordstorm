@@ -1,0 +1,3 @@
+# Python dependencies for load test scripts
+psycopg2-binary==2.9.9
+

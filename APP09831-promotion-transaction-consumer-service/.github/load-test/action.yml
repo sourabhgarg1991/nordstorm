@@ -1,0 +1,218 @@
+name: 'Promotion Transaction Consumer Load Test'
+description: 'Triggers GCP promotion CronJob, validates Aurora DB results, and cleans up test data'
+
+inputs:
+  app-id:
+    description: 'Application ID'
+    required: true
+  app-name:
+    description: 'Application name (base CronJob name)'
+    required: true
+  namespace:
+    description: 'Kubernetes namespace'
+    required: true
+  cloud-identifier:
+    description: 'Cloud account identifier'
+    required: true
+  nsk-cluster:
+    description: 'NSK cluster name'
+    required: true
+  aurora-endpoint:
+    description: 'Aurora PostgreSQL endpoint'
+    required: true
+  vault-url:
+    description: 'Vault URL for secrets'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        pip install -r .github/load-test/scripts/requirements.txt
+
+    - name: Fetch Database Secrets from Vault
+      id: db-secrets
+      uses: Nordstrom-Internal/APP02944-vault-extension/vault-output@v0
+      with:
+        secrets: |
+          nonprod/${{ inputs.app-id }}-promotion-transaction-consumer-service NONPROD_AURORA_TEST_USERNAME
+          nonprod/${{ inputs.app-id }}-promotion-transaction-consumer-service NONPROD_AURORA_TEST_PASSWORD
+          nonprod/${{ inputs.app-id }}-promotion-transaction-consumer-service AURORA_TEST_DATABASE_NAME
+        vault-auth-role: ${{ inputs.app-id }}
+        vault-url: ${{ inputs.vault-url }}
+
+    - name: Record Test Start Time
+      id: test-start
+      shell: bash
+      run: |
+        START_TIME=$(date -u +"%Y-%m-%d %H:%M:%S")
+        echo "start_time=${START_TIME}" >> $GITHUB_OUTPUT
+        echo "Test started at: ${START_TIME} UTC"
+
+    - name: Authenticate with AWS
+      uses: Nordstrom-Internal/app02944-jwn-auth@main
+      with:
+        cloud-provider: aws
+        region: us-west-2
+        cloud-identifier: ${{ inputs.cloud-identifier }}
+
+    - name: Get NSK Kubeconfig
+      uses: Nordstrom-Internal/APP02944-nsk-extension/nsk-auth@main
+      with:
+        nsk-cluster: ${{ inputs.nsk-cluster }}
+        cloud-provider: aws
+        cloud-identifier: ${{ inputs.cloud-identifier }}
+        cloud-region: us-west-2
+
+    - name: Trigger CronJob Manually
+      id: trigger-cronjob
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        APP_NAME="${{ inputs.app-name }}"
+        NAMESPACE="${{ inputs.namespace }}"
+        KUBECTL_FLAGS="-n ${NAMESPACE}"
+        TIMESTAMP=$(date +%s)
+        JOB_NAME="load-test-${TIMESTAMP}"
+        
+        echo "job_name=${JOB_NAME}" >> $GITHUB_OUTPUT
+        
+        echo "=== Load Test Configuration ==="
+        echo "CronJob name: ${APP_NAME}"
+        echo "Job name: ${JOB_NAME}"
+        echo "Namespace: ${NAMESPACE}"
+        echo ""
+        
+        if ! kubectl ${KUBECTL_FLAGS} get cronjob ${APP_NAME} &>/dev/null; then
+          echo "ERROR: CronJob ${APP_NAME} not found"
+          echo "Available CronJobs:"
+          kubectl ${KUBECTL_FLAGS} get cronjobs
+          exit 1
+        fi
+        
+        kubectl ${KUBECTL_FLAGS} create job --from=cronjob/${APP_NAME} ${JOB_NAME}
+        echo "Job ${JOB_NAME} created"
+        
+        echo "Waiting for pod..."
+        MAX_RETRIES=15
+        RETRY_COUNT=0
+        POD_NAME=""
+        
+        while [ -z "$POD_NAME" ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          sleep 10
+          POD_NAME=$(kubectl ${KUBECTL_FLAGS} get pods \
+            --selector=job-name=${JOB_NAME} \
+            --output=jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        
+          if [ -z "$POD_NAME" ]; then
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "  Retry ${RETRY_COUNT}/${MAX_RETRIES}..."
+          else
+            echo "Found pod: ${POD_NAME}"
+            echo "pod_name=${POD_NAME}" >> $GITHUB_OUTPUT
+          fi
+        done
+        
+        if [ -z "$POD_NAME" ]; then
+          echo "ERROR: Pod not found after ${MAX_RETRIES} attempts"
+          kubectl ${KUBECTL_FLAGS} describe job ${JOB_NAME}
+          exit 1
+        fi
+
+    - name: Follow Job Logs
+      shell: bash
+      run: |
+        NAMESPACE="${{ inputs.namespace }}"
+        KUBECTL_FLAGS="-n ${NAMESPACE}"
+        POD_NAME="${{ steps.trigger-cronjob.outputs.pod_name }}"
+        
+        echo "Following logs for pod ${POD_NAME}..."
+        kubectl ${KUBECTL_FLAGS} logs pod/${POD_NAME} -f --timestamps
+
+    - name: Verify Job Success
+      shell: bash
+      run: |
+        NAMESPACE="${{ inputs.namespace }}"
+        KUBECTL_FLAGS="-n ${NAMESPACE}"
+        POD_NAME="${{ steps.trigger-cronjob.outputs.pod_name }}"
+        
+        echo "Verifying job completed successfully..."
+        
+        FINAL_LOGS=$(kubectl ${KUBECTL_FLAGS} logs pod/${POD_NAME} --tail=100 2>/dev/null || echo "")
+        
+        if echo "$FINAL_LOGS" | grep -q "Job Completion Summary"; then
+          echo "SUCCESS: Found job completion message"
+          exit 0
+        else
+          echo "WARNING: No completion message found"
+        
+          if echo "$FINAL_LOGS" | grep -qi "Critical error"; then
+            echo "ERROR: Found error in logs"
+            echo "$FINAL_LOGS"
+            exit 1
+          fi
+        
+          echo "No errors found, proceeding..."
+        fi
+
+    - name: Validate Database State
+      shell: bash
+      env:
+        DB_HOST: ${{ inputs.aurora-endpoint }}
+        DB_NAME: ${{ steps.db-secrets.outputs.AURORA_TEST_DATABASE_NAME }}
+        DB_USER: ${{ steps.db-secrets.outputs.NONPROD_AURORA_TEST_USERNAME }}
+        DB_PASSWORD: ${{ steps.db-secrets.outputs.NONPROD_AURORA_TEST_PASSWORD }}
+        TEST_START_TIME: ${{ steps.test-start.outputs.start_time }}
+      run: |
+        echo "Validating database state..."
+        
+        python .github/load-test/scripts/validate_database_state.py \
+          --test-start-time "${TEST_START_TIME}"
+        
+        echo "Validation completed"
+
+    - name: Cleanup Test Data
+      if: always()
+      shell: bash
+      env:
+        DB_HOST: ${{ inputs.aurora-endpoint }}
+        DB_NAME: ${{ steps.db-secrets.outputs.AURORA_TEST_DATABASE_NAME }}
+        DB_USER: ${{ steps.db-secrets.outputs.NONPROD_AURORA_TEST_USERNAME }}
+        DB_PASSWORD: ${{ steps.db-secrets.outputs.NONPROD_AURORA_TEST_PASSWORD }}
+        TEST_START_TIME: ${{ steps.test-start.outputs.start_time }}
+      run: |
+        echo "Cleaning up test data..."
+        
+        python .github/load-test/scripts/cleanup_test_data.py \
+          --test-start-time "${TEST_START_TIME}"
+        
+        echo "Cleanup completed"
+
+    - name: Cleanup Kubernetes Job
+      if: always()
+      shell: bash
+      run: |
+        NAMESPACE="${{ inputs.namespace }}"
+        KUBECTL_FLAGS="-n ${NAMESPACE}"
+        JOB_NAME="${{ steps.trigger-cronjob.outputs.job_name }}"
+        POD_NAME="${{ steps.trigger-cronjob.outputs.pod_name }}"
+        
+        if [ -n "$POD_NAME" ]; then
+          echo "Force deleting pod ${POD_NAME}..."
+          kubectl ${KUBECTL_FLAGS} delete pod ${POD_NAME} --force --grace-period=0 2>/dev/null || \
+            echo "Pod already deleted"
+        fi
+        
+        if [ -n "$JOB_NAME" ]; then
+          echo "Deleting job ${JOB_NAME}..."
+          kubectl ${KUBECTL_FLAGS} delete job ${JOB_NAME} --wait=false 2>/dev/null || \
+            echo "Job already deleted"
+        fi

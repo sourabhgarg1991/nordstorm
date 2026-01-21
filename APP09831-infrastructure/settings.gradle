@@ -1,0 +1,23 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = 'artifactory'
+            url = 'https://artifactory.nordstrom.com/artifactory/maven'
+            credentials(PasswordCredentials)
+        }
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            name = 'artifactory'
+            url = 'https://artifactory.nordstrom.com/artifactory/maven'
+            credentials(PasswordCredentials)
+        }
+    }
+}
+
+rootProject.name = "infrastructure"
+

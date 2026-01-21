@@ -1,0 +1,80 @@
+name: PROD Flyway Migration
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment for migration as prod'
+        required: true
+        type: choice
+        options:
+          - 'prod'
+        default: 'prod'
+      change-request-short-description:
+        description: 'Change Request Short Description'
+        required: true
+        type: string
+      change-request-number:
+        description: 'Change Request number when bringing a pre-approved CR (BYOCR)'
+        required: false
+        type: string
+
+concurrency:
+  group: flyway-migration-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  create-change-request:
+    name: Create ServiceNow Change Request
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/change-request.yml@v7
+    secrets: inherit
+    with:
+      change-request-short-description: ${{ github.event.inputs.change-request-short-description }}
+      change-request-number: ${{ github.event.inputs.change-request-number }}
+      change-request-risk: '4'
+      github-job-runs-on: 'linux-prod'
+      change-request-full-description: |
+        Manual Flyway migration triggered by workflow dispatch.
+        Commit: ${{ github.sha }}
+        Workflow Run ID: ${{ github.run_id }}
+        Actor: ${{ github.actor }}
+      change-request-backout-plan: "Revert to the previous commit and redeploy."
+      vault-servicenow-creds-paths: |-
+        servicenow-creds SNAPI_PROD_USER as servicenow-username  
+        servicenow-creds SNAPI_PROD_PW as servicenow-password 
+
+  flyway-migrate:
+    needs: create-change-request
+    name: Flyway Migration - ${{ inputs.environment }}
+    runs-on: 'linux-prod'
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set Environment Variables
+        run: |
+          echo "ENV_PREFIX=PROD" >> $GITHUB_ENV
+          echo "INCLUDE_TEST_DATABASE=false" >> $GITHUB_ENV
+
+      - name: Run Flyway Migration
+        uses: ./.github/flyway-migrate
+        with:
+          env: ${{ inputs.environment }}
+          vault-aurora-master-username: 'prod/APP09831-infrastructure PROD_AURORA_MASTER_USERNAME'
+          vault-aurora-master-password: 'prod/APP09831-infrastructure PROD_AURORA_MASTER_PASSWORD'
+          vault-aurora-service-username: 'prod/APP09831-infrastructure PROD_AURORA_SERVICE_USERNAME'
+          vault-aurora-service-password: 'prod/APP09831-infrastructure PROD_AURORA_SERVICE_PASSWORD'
+          vault-aurora-test-username: ''
+          vault-aurora-test-password: ''
+
+      - name: Migration Summary
+        run: |
+          echo "Flyway migration completed successfully!"
+          echo "Environment: ${{ inputs.environment }}"
+          echo ""
+          echo "The following database is migrated:"
+          echo "- dataintegration (main database)"

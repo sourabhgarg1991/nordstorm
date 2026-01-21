@@ -1,0 +1,17 @@
+name: Publish Library
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gradle-publish:
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-publish.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: '8'

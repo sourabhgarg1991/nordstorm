@@ -1,0 +1,97 @@
+name: Manual Production Workflow
+on:
+  workflow_dispatch:
+    inputs:
+      change-request-short-description:
+        description: 'Change Request Short Description'
+        required: true
+        type: string
+      change-request-number:
+        description: 'Change Request number when bringing a pre-approved CR (BYOCR)'
+        required: false
+        type: string
+
+concurrency:
+  group: prod-workflow
+  cancel-in-progress: true
+
+permissions:
+  id-token: write  # An ID token is required to access cloud credentials.
+  contents: read
+
+jobs:
+  terraform-check:
+    uses:    Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-check.yml@v7
+    secrets: inherit
+    with:
+      config-directory: terraform
+
+  create-change-request:
+    needs: terraform-check
+    name: Create ServiceNow Change Request
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/change-request.yml@v7
+    secrets: inherit
+    with:
+      github-job-environment: 'nonprod/review'
+      change-request-short-description: ${{ github.event.inputs.change-request-short-description }}
+      change-request-number: ${{ github.event.inputs.change-request-number }}
+      change-request-risk: '4'
+      github-job-runs-on: 'linux-prod'
+      change-request-full-description: |
+        Manual production deployment triggered by workflow dispatch.
+        Commit: ${{ github.sha }}
+        Workflow Run ID: ${{ github.run_id }}
+        Actor: ${{ github.actor }}
+      change-request-backout-plan: "Revert to the previous commit and redeploy."
+      vault-servicenow-creds-paths: |-
+        servicenow-creds SNAPI_PROD_USER as servicenow-username  
+        servicenow-creds SNAPI_PROD_PW as servicenow-password  
+
+  terraform-plan:
+    uses:    Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-plan.yml@v7
+    needs:   [create-change-request, terraform-check]
+    secrets: inherit
+    permissions: write-all
+    with:
+      backend-type:     s3
+      cloud-identifier: 969378265367
+      cloud-provider:   aws
+      cloud-region:     us-west-2
+      config-directory: terraform
+      github-job-environment: prod
+      github-job-runs-on: linux-prod
+      state-name: 'main'
+      input-variables: |
+        app_id = "app09831"
+        app_name = "Infrastructure"
+        environment = "prod"
+        env_app_name = "Infrastructure"
+        aurora_database_name   = "${vault:prod/APP09831-infrastructure PROD_AURORA_DATABASE_NAME}"
+        aurora_master_username = "${vault:prod/APP09831-infrastructure PROD_AURORA_MASTER_USERNAME}"
+        aurora_master_password = "${vault:prod/APP09831-infrastructure PROD_AURORA_MASTER_PASSWORD}"
+        oauth_client_id        = "${vault:prod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_ID}"
+        oauth_client_secret    = "${vault:prod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET}"
+
+  terraform-apply:
+    uses:    Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-apply.yml@v7
+    needs:   [create-change-request, terraform-plan]
+    secrets: inherit
+    with:
+      backend-type:     s3
+      cloud-identifier: 969378265367
+      cloud-provider:   aws
+      cloud-region:     us-west-2
+      config-directory: terraform
+      github-job-environment: prod
+      github-job-runs-on: linux-prod
+      state-name: 'main'
+      input-variables: |
+        app_id = "app09831"
+        app_name = "Infrastructure"
+        environment = "prod"
+        env_app_name = "Infrastructure"
+        aurora_database_name   = "${vault:prod/APP09831-infrastructure PROD_AURORA_DATABASE_NAME}"
+        aurora_master_username = "${vault:prod/APP09831-infrastructure PROD_AURORA_MASTER_USERNAME}"
+        aurora_master_password = "${vault:prod/APP09831-infrastructure PROD_AURORA_MASTER_PASSWORD}"
+        oauth_client_id        = "${vault:prod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_ID}"
+        oauth_client_secret    = "${vault:prod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET}"

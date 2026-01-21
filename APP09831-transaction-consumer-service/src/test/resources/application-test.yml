@@ -1,0 +1,18 @@
+metrics:
+  constantTags:
+    - "environment:test"
+    - "appid:APP08992"
+    - "service_name:retail-transaction-accounting-processor"
+    - "tier:2"
+fortknox:
+  tls:
+    enabled: false
+  redemption:
+    url: //mock-fortknox-redemption-service
+    keyStore: /test
+    keyStorePassword: test
+    maxAttempts: 3
+    minBackoffInSeconds: 5
+app:
+  fortknox:
+    redeem: true

@@ -1,0 +1,69 @@
+name: Nonprod Workflow
+on:
+  push:
+    branches:
+      - release/nonprod
+  workflow_dispatch:
+
+concurrency:
+  group: nonprod-workflow-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write  # An ID token is required to access cloud credentials.
+  contents: read
+
+jobs:
+  terraform-check:
+    uses:    Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-check.yml@v7
+    secrets: inherit
+    with:
+      config-directory: terraform
+
+  terraform-plan:
+    uses:    Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-plan.yml@v7
+    needs:   terraform-check
+    secrets: inherit
+    with:
+      backend-type:     s3
+      cloud-identifier: "007979315855"
+      cloud-provider:   aws
+      cloud-region:     us-west-2
+      config-directory: terraform
+      github-job-environment: nonprod
+      github-job-runs-on: linux-nonprod
+      state-name: 'main'
+      input-variables: |
+        app_id = "app09831"
+        app_name = "Infrastructure"
+        environment = "nonprod"
+        env_app_name = "Infrastructure"
+        aurora_database_name   = "${vault:nonprod/APP09831-infrastructure NONPROD_AURORA_DATABASE_NAME}"
+        aurora_master_username = "${vault:nonprod/APP09831-infrastructure NONPROD_AURORA_MASTER_USERNAME}"
+        aurora_master_password = "${vault:nonprod/APP09831-infrastructure NONPROD_AURORA_MASTER_PASSWORD}"
+        oauth_client_id = "${vault:nonprod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_ID}"
+        oauth_client_secret = "${vault:nonprod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET}"
+
+  terraform-apply:
+    if: github.event_name == 'push'
+    uses:    Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/terraform-apply.yml@v7
+    needs:   terraform-plan
+    secrets: inherit
+    with:
+      backend-type:     s3
+      cloud-identifier: "007979315855"
+      cloud-provider:   aws
+      cloud-region:     us-west-2
+      config-directory: terraform
+      github-job-environment: nonprod
+      github-job-runs-on: linux-nonprod
+      input-variables: |
+        app_id = "app09831"
+        app_name = "Infrastructure"
+        environment = "nonprod"
+        env_app_name = "Infrastructure"
+        aurora_database_name   = "${vault:nonprod/APP09831-infrastructure NONPROD_AURORA_DATABASE_NAME}"
+        aurora_master_username = "${vault:nonprod/APP09831-infrastructure NONPROD_AURORA_MASTER_USERNAME}"
+        aurora_master_password = "${vault:nonprod/APP09831-infrastructure NONPROD_AURORA_MASTER_PASSWORD}"
+        oauth_client_id = "${vault:nonprod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_ID}"
+        oauth_client_secret = "${vault:nonprod/APP09831-infrastructure CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET}"

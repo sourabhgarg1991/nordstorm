@@ -1,0 +1,95 @@
+applicationId: ${APP_ID:APP09831-test}
+
+metrics:
+  constantTags:
+    - "environment:test"
+    - "appid:APP09831"
+    - "service_name:transaction-consumer-service"
+    - "tier:2"
+
+spring:
+  main:
+    web-application-type: NONE
+  application:
+    name: transaction-consumer-service
+  jpa:
+    open-in-view: false
+    database: POSTGRESQL
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    generate-ddl: false
+    hibernate:
+      ddl-auto: validate  # Validate schema against existing tables
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+        implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyJpaCompliantImpl
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 2000
+          batch_versioned_data: true
+        order_inserts: true
+        # SQL logging disabled for cleaner test output
+        show_sql: false
+        format_sql: false
+        use_sql_comments: false
+  datasource:
+    url: jdbc:postgresql://${AURORA_TEST_POSTGRESQL_DATABASE_ENDPOINT}:5432/${AURORA_TEST_DATABASE_NAME}
+    username: ${AURORA_TEST_POSTGRESQL_USERNAME}
+    password: ${AURORA_TEST_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      maxLifetime: 2000000
+      connectionTimeout: 30000
+  task:
+    execution:
+      pool:
+        core-size: 3
+        max-size: 5
+        queue-capacity: 20
+        keep-alive: 10s
+  kafka:
+    bootstrap-servers: ${spring.embedded.kafka.brokers}
+    properties:
+      schema.registry.url: ${SCHEMA_REGISTRY_URL:mock://test-schema-registry}
+      auto.register.schemas: false
+      specific.avro.reader: true
+      spring.deserializer.value.delegate.class: com.nordstrom.finance.dataintegration.mock.MockKafkaAvroDeserializer
+      # Override OAuth settings from main application.yml - not needed for embedded Kafka
+      security.protocol: PLAINTEXT
+    consumer:
+      group-id: ${SDM_CONSUMER_GROUP_ID:test-consumer-group}
+      enable-auto-commit: true
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:mock://test-schema-registry}
+        auto.register.schemas: false
+        specific.avro.reader: true
+        spring.deserializer.value.delegate.class: com.nordstrom.finance.dataintegration.mock.MockKafkaAvroDeserializer
+        # Override OAuth settings from main application.yml - not needed for embedded Kafka
+        security.protocol: PLAINTEXT
+      max-poll-records: 10
+    listener:
+      concurrency: 3
+      type: batch
+app:
+  kafka:
+    consumer:
+      topic:
+        restaurant: ${SDM_RESTAURANT_TRANSACTION_TOPIC_NAME:test-restaurant-topic}
+        marketplace: ${SDM_MARKETPLACE_TRANSACTION_TOPIC_NAME:test-marketplace-topic}
+  fortknox:
+    redeem: false
+fortknox:
+  tls:
+    enabled: false
+  redemption:
+    url: ${FORTKNOX_REDEMPTION_URL:http://localhost:8080/mock-fortknox}
+    key-store: classpath:fortknox-test-keystore.jks
+    key-store-password: testpassword
+    max-attempts: 3
+    min-backoff-in-seconds: 1

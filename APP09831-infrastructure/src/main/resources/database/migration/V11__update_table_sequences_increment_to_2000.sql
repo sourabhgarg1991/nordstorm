@@ -1,0 +1,7 @@
+ALTER SEQUENCE public.transaction_transaction_id_seq INCREMENT BY 2000;
+ALTER SEQUENCE public.transaction_line_transaction_line_id_seq INCREMENT BY 2000;
+ALTER SEQUENCE public.retail_transaction_line_retail_transaction_line_id_seq INCREMENT BY 2000;
+ALTER SEQUENCE public.restaurant_transaction_line_restaurant_transaction_line_id_seq INCREMENT BY 2000;
+ALTER SEQUENCE public.promotion_transaction_line_promotion_transaction_line_id_seq INCREMENT BY 2000;
+ALTER SEQUENCE public.marketplace_transaction_line_marketplace_transaction_line_i_seq INCREMENT BY 2000;
+ALTER SEQUENCE public.transaction_aggregation_relat_transaction_aggregation_relat_seq INCREMENT BY 2000;

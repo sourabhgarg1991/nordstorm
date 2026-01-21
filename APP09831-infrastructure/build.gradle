@@ -1,0 +1,39 @@
+buildscript {
+    dependencies {
+        classpath "org.flywaydb:flyway-database-postgresql:11.11.0"
+    }
+}
+
+plugins {
+    id 'java'
+    id 'org.flywaydb.flyway' version '11.11.0'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+group = "com.nordstrom.infrastructure.database"
+version = "1.0.0"
+
+dependencies {
+    implementation 'org.postgresql:postgresql:42.7.7'
+    implementation 'org.flywaydb:flyway-core:11.11.0'
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+
+flyway {
+    url = "jdbc:postgresql://${System.getenv('AURORA_DATABASE_ENDPOINT')}:5432/${System.getenv('AURORA_DATABASE_NAME')}"
+    user = System.getenv('AURORA_MASTER_USERNAME')
+    password = System.getenv('AURORA_MASTER_PASSWORD')
+    schemas = ['public']
+    locations = ['classpath:database/migration']
+}
+
+flywayInfo.dependsOn(processResources)
+flywayMigrate.dependsOn(processResources)

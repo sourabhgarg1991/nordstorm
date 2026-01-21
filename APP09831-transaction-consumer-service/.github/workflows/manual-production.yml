@@ -1,0 +1,117 @@
+name: Manual Production NSK Deployment Workflow - APP09831
+
+on:
+  workflow_dispatch:
+    inputs:
+      change-request-short-description:
+        description: 'Change Request Short Description'
+        required: true
+        type: string
+      change-request-number:
+        description: 'Change Request number when bringing a pre-approved CR (BYOCR)'
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gradle-build:
+    name: Gradle Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: 8
+
+  docker-build:
+    needs: gradle-build
+    name: Docker Container Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/docker.yml@v7
+    secrets: inherit
+    with:
+      app-name: transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.gradle-build.outputs.build-version }}
+
+  change-request:
+    name: Create Change Request
+    needs: docker-build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/change-request.yml@v7
+    secrets: inherit
+    with:
+      change-request-risk: 3
+      change-request-assignment-group: TECH_FIN_DATA_INTEGRATION_SUPPORT
+      change-request-short-description: ${{ github.event.inputs.change-request-short-description }}
+      change-request-number: ${{ github.event.inputs.change-request-number }}
+      change-request-full-description: |
+        Automated production deployment of transaction consumer service.
+        Commit: ${{ github.sha }}
+        Workflow Run ID: ${{ github.run_id }}
+        Actor: ${{ github.actor }}
+        App Version: ${{ needs.docker-build.outputs.app-version }}
+      change-request-backout-plan: "Revert to the previous commit and redeploy."
+      vault-servicenow-creds-paths: |-
+        global SNAPI_PROD_USER as servicenow-username
+        global SNAPI_PROD_PW as servicenow-password
+      github-job-runs-on: linux-prod
+
+  nsk-deploy-prod:
+    needs: [docker-build, change-request]
+    name: Deploy to NSK - Prod
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-deploy.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-prod
+      github-job-environment: prod
+      deployment-environment: prod
+      app-name: transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.docker-build.outputs.app-version }}
+      container-image-name: ${{ needs.docker-build.outputs.image-name }}
+      container-image-tag: ${{ needs.docker-build.outputs.image-tag }}
+      cloud-region: us-west-2
+      cloud-identifier: '969378265367'
+      deployment-target: nskapp
+      nsk-cluster: nsk-maple-prod
+      k8s-includes-service: true
+      k8s-ingress-scheme: internal
+      k8s-ingress-type: standard
+      k8s-readiness-probe-path: /health
+      k8s-min-replicas: 1
+      k8s-max-replicas: 1
+      k8s-namespace: app09831
+      k8s-requests-memory: '1000Mi'
+      k8s-rollout-status-timeout: 10
+      k8s-irsa-role-arn: 'arn:aws:iam::969378265367:role/fin-data-integration-k8s-access-role-prod'
+      k8s-env-vars: |
+        [
+          { "name": "ENV_NAME", "value": "prod" },
+          { "name": "SPRING_PROFILES_ACTIVE", "value": "prod" },
+          { "name": "APP_ID", "value": "APP09831" },
+          { "name": "SCHEMA_REGISTRY_URL", "value": "https://schema-registry-prod-us-west-2.nordstromaws.app" },
+          { "name": "CONFLUENT_CLOUD_BOOTSTRAP_SERVER", "value": "lkc-3nwdnj.dom6pk11zgn.us-west-2.aws.confluent.cloud:9092" },
+          { "name": "CONFLUENT_CLOUD_CLUSTER_ID", "value": "lkc-3nwdnj" },
+          { "name": "CONFLUENT_CLOUD_IDENTITY_POOL_ID", "value": "pool-y9m1Y" },
+          { "name": "OAUTH_ENDPOINT_URL", "value": "https://nordstrom.okta.com/oauth2/aus8jpgn42hBmHNM92p7/v1/token" },
+          { "name": "SDM_RETAIL_TRANSACTION_TOPIC_NAME", "value": "customer-financial-retail-transaction-operational-avro" },
+          { "name": "SDM_RESTAURANT_TRANSACTION_TOPIC_NAME", "value": "customer-financial-restaurant-transaction-operational-avro" },
+          { "name": "SDM_CONSUMER_GROUP_ID", "value": "APP09831-data-integration-consumer" },
+          { "name": "AURORA_POSTGRESQL_DATABASE_ENDPOINT", "value": "fin-data-integration-cluster-prod.cluster-cx664c8q0d16.us-west-2.rds.amazonaws.com" },
+          { "name": "FORTKNOX_REDEMPTION_KEYSTORE", "value": "/etc/keystore/keystore.jks" },
+          { "name": "FORTKNOX_REDEMPTION_API_URL", "value": "https://redemption.prod.fortknox.vip.nordstrom.com" }
+        ]
+      application-secrets-template: |
+        env:NEW_RELIC_LICENSE_KEY                        = ${vault:prod/APP09831-transaction-consumer-service NEW_RELIC_LICENSE_KEY}
+        env:AURORA_DATABASE_NAME                         = ${vault:prod/APP09831-transaction-consumer-service PROD_AURORA_DATABASE_NAME}
+        env:AURORA_POSTGRESQL_USERNAME                   = ${vault:prod/APP09831-transaction-consumer-service PROD_AURORA_SERVICE_USERNAME}
+        env:AURORA_POSTGRESQL_PASSWORD                   = ${vault:prod/APP09831-transaction-consumer-service PROD_AURORA_SERVICE_PASSWORD}
+        env:CONFLUENT_CLOUD_OAUTH_CLIENT_ID              = ${vault:prod/APP09831-transaction-consumer-service CONFLUENT_CLOUD_OAUTH_CLIENT_ID}
+        env:CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET          = ${vault:prod/APP09831-transaction-consumer-service CONFLUENT_CLOUD_OAUTH_CLIENT_SECRET}
+        env:IS_COMMISSION_REDEMPTION_ENABLED             = ${vault:prod/APP09831-transaction-consumer-service IS_COMMISSION_REDEMPTION_ENABLED}
+        env:FORTKNOX_REDEMPTION_KEYSTORE_PASSWORD        = ${vault:prod/APP09831-transaction-consumer-service FORTKNOX_REDEMPTION_KEYSTORE_PASSWORD}
+        file:/etc/keystore/keystore.jks:base64           = ${vault:prod/APP09831-transaction-consumer-service FORTKNOX_REDEMPTION_KEYSTORE_BASE64}

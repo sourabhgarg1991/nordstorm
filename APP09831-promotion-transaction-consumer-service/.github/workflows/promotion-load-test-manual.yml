@@ -1,0 +1,136 @@
+name: Manual Promotion Consumer Load Test - Nonprod
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  generate-gcp-credentials-nonprod:
+    runs-on: linux-nonprod
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get repository metadata
+        id: metadata
+        uses: Nordstrom-Internal/app02944-repository-metadata@v1.0.0
+
+      - name: Fetch Vault Secrets
+        id: extract-vault-secrets
+        uses: Nordstrom-Internal/APP02944-vault-extension/vault-output@v0
+        with:
+          secrets: |
+            nonprod/APP09831-promotion-transaction-consumer-service NONPROD_GCP_SERVICE_ACCOUNT_NAME
+          vault-auth-role: ${{ steps.metadata.outputs.app-id }}
+          vault-url: https://nonprodendpoint-to-prodvault.nordstrom.app:8200
+
+      - name: Generate GCP credentials (nonprod)
+        env:
+          GCP_SERVICE_ACCOUNT_NAME_NONPROD: ${{ steps.extract-vault-secrets.outputs.NONPROD_GCP_SERVICE_ACCOUNT_NAME }}
+          NSK_CLUSTER_NONPROD: nsk-maple-nonprod
+        run: |
+          envsubst < .github/ci-templates/gcp-credentials-template-nonprod.json > gcp-credentials-nonprod.json
+
+      - name: Upload GCP credentials artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcp-credentials-nonprod
+          path: gcp-credentials-nonprod.json
+          if-no-files-found: error
+          retention-days: 1
+
+  gradle-build:
+    name: Gradle Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: 8
+
+  docker-build:
+    needs: [ generate-gcp-credentials-nonprod, gradle-build ]
+    name: Docker Container Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/docker.yml@v7
+    secrets: inherit
+    with:
+      app-name: promotion-transaction-consumer-service
+      app-id: APP09831
+      app-version: ${{ needs.gradle-build.outputs.build-version }}
+      docker-build-additional-args: --build-arg GCP_ENV="nonprod" # for nonprod GCP credentials
+
+  k8s-nskapp-deploy-loadtest:
+    needs: docker-build
+    name: Deploy to NSK for Load Test
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-deploy.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-nonprod
+      github-job-environment: nonprod
+      deployment-environment: nonprod
+      app-name: 'promotion-transaction-consumer-service'
+      app-id: 'APP09831'
+      app-version: ${{ needs.docker-build.outputs.app-version }}
+      container-image-name: ${{ needs.docker-build.outputs.image-name }}
+      container-image-tag: ${{ needs.docker-build.outputs.image-tag }}
+      cloud-provider: 'aws'
+      cloud-region: 'us-west-2'
+      cloud-identifier: '007979315855'
+      deployment-target: 'nskapp'
+      nsk-cluster: 'nsk-maple-nonprod'
+      k8s-irsa-role-arn: 'arn:aws:iam::007979315855:role/fin-data-integration-k8s-access-role-nonprod'
+      k8s-workload-type: CronJob
+      k8s-container-restart-policy: Never
+      k8s-cronjob-schedule: "0 0 * * *"
+      k8s-requests-memory: '3.0Gi'
+      k8s-requests-cpu: '1000m'
+      k8s-includes-service: false
+      k8s-namespace: 'app09831'
+      k8s-min-replicas: 1
+      k8s-max-replicas: 1
+      k8s-env-vars: |
+        [
+          { "name": "ENV_NAME", "value": "loadtest" },
+          { "name": "SPRING_PROFILES_ACTIVE", "value": "loadtest" },
+          { "name": "APP_ID", "value": "APP09831" }
+        ]
+      application-secrets-template: |
+        env:NEW_RELIC_LICENSE_KEY = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NEW_RELIC_LICENSE_KEY}
+        env:AURORA_POSTGRESQL_DATABASE_ENDPOINT = fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com
+        env:AURORA_DATABASE_NAME = ${vault:nonprod/APP09831-promotion-transaction-consumer-service AURORA_TEST_DATABASE_NAME}
+        env:AURORA_POSTGRESQL_USERNAME = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NONPROD_AURORA_TEST_USERNAME}
+        env:AURORA_POSTGRESQL_PASSWORD = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NONPROD_AURORA_TEST_PASSWORD}
+        env:PROMO_SOURCE_GCP_PROJECT_ID = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NONPROD_PROMO_SOURCE_GCP_PROJECT_ID}
+        env:GCP_PROJECT_ID = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NONPROD_GCP_PROJECT_ID}
+        env:PROMO_SOURCE_GCP_DATASET = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NONPROD_PROMO_SOURCE_GCP_DATASET}
+        env:PROMO_SOURCE_GCP_TABLE_NAME = ${vault:nonprod/APP09831-promotion-transaction-consumer-service NONPROD_PROMO_SOURCE_GCP_TABLE_NAME}
+        env:START_DATE_OVERRIDE = ${vault:nonprod/APP09831-promotion-transaction-consumer-service LOAD_TEST_START_DATE_OVERRIDE}
+        env:END_DATE_OVERRIDE = ${vault:nonprod/APP09831-promotion-transaction-consumer-service LOAD_TEST_END_DATE_OVERRIDE}
+        env:GCP_PROMOTION_DATA_PAGE_SIZE = ${vault:nonprod/APP09831-promotion-transaction-consumer-service LOAD_TEST_GCP_PROMOTION_DATA_PAGE_SIZE}
+
+  promotion-load-test:
+    needs: k8s-nskapp-deploy-loadtest
+    name: Run Promotion Consumer Load Test
+    runs-on: linux-nonprod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Load Test
+        uses: ./.github/load-test
+        with:
+          app-id: 'APP09831'
+          app-name: 'promotion-transaction-consumer-service'
+          namespace: 'app09831'
+          cloud-identifier: '007979315855'
+          nsk-cluster: 'nsk-maple-nonprod'
+          aurora-endpoint: 'fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com'
+          vault-url: 'https://nonprodendpoint-to-prodvault.nordstrom.app:8200'

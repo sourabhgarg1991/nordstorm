@@ -1,0 +1,151 @@
+name: Manual Load Test - All Types - NonProd
+
+on:
+  workflow_dispatch:
+    inputs:
+      transaction-types:
+        description: 'Transaction types to test (comma-separated: retail,restaurant,marketplace,promotion or "all")'
+        required: true
+        type: string
+        default: 'all'
+      test-data-count:
+        description: 'Number of test transactions to insert per type'
+        required: true
+        type: number
+        default: 100
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gradle-build:
+    name: Gradle Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/gradle-build.yml@v7
+    secrets: inherit
+    with:
+      gradle-version: 8
+
+  docker-build:
+    needs: [gradle-build]
+    name: Docker Container Build
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/docker.yml@v7
+    secrets: inherit
+    with:
+      app-name: transaction-aggregation-service
+      app-id: APP09831
+      app-version: ${{ needs.gradle-build.outputs.build-version }}
+
+  k8s-nskapp-deploy-loadtest:
+    needs: docker-build
+    name: Deploy to NSK for Load Test
+    uses: Nordstrom-Internal/APP02944-internal-marketplace/.github/workflows/nsk-deploy.yml@v7
+    secrets: inherit
+    with:
+      github-job-runs-on: linux-nonprod
+      github-job-environment: nonprod
+      deployment-environment: nonprod
+      app-name: 'transaction-aggregation-service'
+      app-id: 'APP09831'
+      app-version: ${{ needs.docker-build.outputs.app-version }}
+      container-image-name: ${{ needs.docker-build.outputs.image-name }}
+      container-image-tag: ${{ needs.docker-build.outputs.image-tag }}
+      cloud-provider: 'aws'
+      cloud-region: 'us-west-2'
+      cloud-identifier: '007979315855'
+      deployment-target: 'nskapp'
+      k8s-workload-type: CronJob
+      k8s-container-restart-policy: Never
+      k8s-cronjob-schedule: "30 9 * * *"
+      nsk-cluster: 'nsk-maple-nonprod'
+      k8s-irsa-role-arn: 'arn:aws:iam::007979315855:role/fin-data-integration-k8s-access-role-nonprod'
+      k8s-requests-memory: '8.0Gi'
+      k8s-requests-cpu: '1000m'
+      k8s-includes-service: false
+      k8s-namespace: 'app09831'
+      k8s-min-replicas: 1
+      k8s-max-replicas: 1
+      k8s-env-vars: |
+        [
+          { "name": "ENV_NAME", "value": "loadtest" },
+          { "name": "SPRING_PROFILES_ACTIVE", "value": "nonprod" },
+          { "name": "APP_ID", "value": "APP09831" },
+          { "name": "ABSTRACTION_SERVICE_UPLOAD_BUCKET", "value": "app09831-data-integration-test" }
+        ]
+      application-secrets-template: |
+        env:NEW_RELIC_LICENSE_KEY = ${vault:nonprod/APP09831-transaction-aggregation-service NEW_RELIC_LICENSE_KEY}
+        env:AURORA_POSTGRESQL_DATABASE_ENDPOINT = fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com
+        env:AURORA_DATABASE_NAME = ${vault:nonprod/APP09831-transaction-aggregation-service AURORA_TEST_DATABASE_NAME}
+        env:AURORA_POSTGRESQL_USERNAME = ${vault:nonprod/APP09831-transaction-aggregation-service NONPROD_AURORA_TEST_USERNAME}
+        env:AURORA_POSTGRESQL_PASSWORD = ${vault:nonprod/APP09831-transaction-aggregation-service NONPROD_AURORA_TEST_PASSWORD}
+
+  load-test:
+    name: Load Test
+    runs-on: linux-nonprod
+    needs: k8s-nskapp-deploy-loadtest
+    environment: nonprod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Parse Transaction Types
+        id: parse-types
+        run: |
+          TYPES="${{ inputs.transaction-types }}"
+          if [ "$TYPES" = "all" ]; then
+            TYPES="retail,restaurant,marketplace,promotion"
+          fi
+          echo "types=$TYPES" >> $GITHUB_OUTPUT
+          echo "Testing types: $TYPES"
+
+      - name: Authenticate with AWS
+        uses: Nordstrom-Internal/app02944-jwn-auth@main
+        with:
+          cloud-provider: aws
+          region: us-west-2
+          cloud-identifier: "007979315855"
+
+      - name: Get NSK Kubeconfig
+        uses: Nordstrom-Internal/APP02944-nsk-extension/nsk-auth@main
+        with:
+          nsk-cluster: nsk-maple-nonprod
+          cloud-provider: aws
+          cloud-identifier: "007979315855"
+          cloud-region: us-west-2
+
+      - name: Run Load Test
+        uses: ./.github/load-test
+        with:
+          app-id: 'APP09831'
+          app-name: 'transaction-aggregation-service'
+          namespace: 'app09831'
+          cloud-identifier: "007979315855"
+          nsk-cluster: 'nsk-maple-nonprod'
+          aurora-endpoint: 'fin-data-integration-cluster-nonprod.cluster-cxcm0iug0tfr.us-west-2.rds.amazonaws.com'
+          vault-url: 'https://nonprodendpoint-to-prodvault.nordstrom.app:8200'
+          test-data-count: ${{ inputs.test-data-count }}
+          transaction-types: ${{ steps.parse-types.outputs.types }}
+
+      - name: Load Test Summary
+        if: always()
+        run: |
+          echo "=== Load Test Execution Completed ==="
+          echo "Environment: nonprod"
+          echo "Transaction types: ${{ steps.parse-types.outputs.types }}"
+          echo "Test data count per type: ${{ inputs.test-data-count }}"
+          echo ""
+          echo "Load test steps performed for each type:"
+          echo "1. ✅ Verified aggregation configuration exists"
+          echo "2. ✅ Inserted test transactions into Aurora DB"
+          echo "3. ✅ Triggered CronJob to process and aggregate data"
+          echo "4. ✅ Validated aggregation relations were created"
+          echo "5. ✅ Validated files were generated and uploaded to S3"
+          echo "6. ✅ Cleaned up test data from database"
+

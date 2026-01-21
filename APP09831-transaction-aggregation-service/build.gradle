@@ -1,0 +1,249 @@
+plugins {
+    id 'java'
+    id 'idea'
+    id 'jacoco'
+    id 'org.springframework.boot' version '3.5.5'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.diffplug.spotless' version '7.0.4'
+    id 'org.owasp.dependencycheck' version '12.1.1'
+    id 'com.github.jk1.dependency-license-report' version '2.9'
+}
+
+ext {
+    lombokVersion = '1.18.38'
+    log4jVersion = '2.24.3'
+    junitVersion = '5.13.0'
+    mockitoVersion = '5.18.0'
+    schemaRepository = '1918'
+    awsSdkVersion2 = '2.30.33'
+    dataIntegrationCommon = '1.0.2'
+}
+
+group = "com.nordstrom.finance.dataintegration.transactionaggregator"
+version = "1.0.0"
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    implementation "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    implementation "com.nordstrom.finance.dataintegration.common:data-integration-common:${dataIntegrationCommon}"
+
+    implementation "org.springframework.boot:spring-boot-starter"
+    implementation "org.springframework.boot:spring-boot-starter-web"
+    implementation "org.springframework.boot:spring-boot-starter-actuator"
+    implementation "org.springframework.boot:spring-boot-starter-data-jpa"
+    implementation 'org.springframework:spring-web'
+    implementation "org.aspectj:aspectjweaver:1.9.19"
+
+    //AWS SDK
+    implementation("software.amazon.awssdk:s3:${awsSdkVersion2}")
+    implementation("software.amazon.awssdk:sts:${awsSdkVersion2}")
+    implementation("software.amazon.awssdk:s3-transfer-manager:${awsSdkVersion2}")
+
+    runtimeOnly('org.postgresql:postgresql:42.7.7')
+
+    implementation("org.apache.commons:commons-csv:1.14.0")
+
+    implementation "com.newrelic.agent.java:newrelic-api:8.4.0"
+    implementation "com.datadoghq:java-dogstatsd-client:4.4.3"
+
+    implementation "org.slf4j:slf4j-api:2.0.12"
+    implementation "org.apache.logging.log4j:log4j-api:${log4jVersion}"
+    implementation "org.apache.logging.log4j:log4j-core:${log4jVersion}"
+    implementation "org.apache.logging.log4j:log4j-slf4j2-impl:${log4jVersion}"
+    implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.7.4"
+    implementation "com.lmax:disruptor:3.4.4"
+
+    testImplementation "org.springframework.boot:spring-boot-starter-test"
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation "org.assertj:assertj-core:3.24.2"
+    testImplementation "org.springframework.kafka:spring-kafka-test"
+    testImplementation 'com.h2database:h2'
+    testImplementation "ch.qos.logback:logback-core:1.5.16"
+    testImplementation("software.amazon.awssdk:s3:${awsSdkVersion2}")
+    runtimeOnly("org.junit.platform:junit-platform-launcher:1.12.2")
+    testCompileOnly("org.projectlombok:lombok:${lombokVersion}")
+    testAnnotationProcessor("org.projectlombok:lombok:${lombokVersion}")
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+    configureEach {
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+        exclude group: 'ch.qos.logback', module: 'logback-classic'
+    }
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events = ["standardOut", "started", "passed", "skipped", "failed"]
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+    finalizedBy jacocoTestReport
+    jacoco {
+        destinationFile = layout.buildDirectory.file("jacoco/test.exec").get().asFile
+    }
+}
+
+// ============================================
+// Integration Test Configuration
+// ============================================
+
+sourceSets {
+    integrationTest {
+        java {
+            compileClasspath += main.output + test.output
+            runtimeClasspath += main.output + test.output
+            srcDir file('src/integrationTest/java')
+        }
+        resources.srcDir file('src/integrationTest/resources')
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+    integrationTestImplementation('org.springframework.boot:spring-boot-starter-test')
+    integrationTestCompileOnly("org.projectlombok:lombok:${lombokVersion}")
+    integrationTestAnnotationProcessor("org.projectlombok:lombok:${lombokVersion}")
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests against Aurora test database'
+    group = 'verification'
+
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+
+    useJUnitPlatform()
+
+    // Set active profile for integration tests
+    systemProperty 'spring.profiles.active', 'integration-test'
+
+    testLogging {
+        events = ["standardOut", "started", "passed", "skipped", "failed"]
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+
+    jacoco {
+        destinationFile = layout.buildDirectory.file("jacoco/integrationTest.exec").get().asFile
+    }
+
+    shouldRunAfter test
+
+    reports {
+        html.outputLocation = layout.buildDirectory.dir("reports/integration-tests")
+    }
+}
+
+processIntegrationTestResources {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+idea {
+    module {
+        testSources.from(sourceSets.integrationTest.java.srcDirs)
+        testResources.from(sourceSets.integrationTest.resources.srcDirs)
+    }
+}
+
+// ============================================
+// Format Configuration
+// ============================================
+
+spotless {
+    java {
+        googleJavaFormat('1.17.0')
+        removeUnusedImports()
+    }
+}
+
+// ============================================
+// Code Coverage Configuration
+// ============================================
+
+jacoco {
+    toolVersion = "0.8.13"
+    reportsDirectory = layout.buildDirectory.dir("reports/jacoco/test")
+}
+
+tasks.register("coverage") {
+    dependsOn {
+        jacocoTestReport
+    }
+    doLast {
+        println "Test coverage report: " + jacocoTestReport.reports.getHtml().getEntryPoint().toURI()
+    }
+}
+
+def jacocoExcludeList = [
+        '**/config/**',
+        'com/nordstrom/finance/dataintegration/aggregation/Application.class',
+        'com/nordstrom/finance/dataintegration/transactionaggregator/Application.class',
+        'com/nordstrom/finance/dataintegration/transactionaggregator/database/entity/**',
+        'com/nordstrom/finance/dataintegration/transactionaggregator/database/repository/**',
+        'com/nordstrom/finance/dataintegration/transactionaggregator/exception/**'
+]
+
+jacocoTestReport {
+    reports {
+        csv.required = true
+        xml.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/test')
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: jacocoExcludeList)
+        }))
+    }
+}
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                minimum = 0.8
+            }
+        }
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: jacocoExcludeList)
+        }))
+    }
+}
+
+dependencyCheck {
+    failBuildOnCVSS = 1
+    suppressionFile='dependency-audit-suppression.xml'
+    analyzers {
+        assemblyEnabled = false
+        artifactory {
+            enabled = true
+            url = 'https://artifactory.nordstrom.com/artifactory'
+            username = artifactoryUsername
+            apiToken = artifactoryPassword
+            assemblyEnabled = false
+        }
+    }
+}
+
+check.dependsOn jacocoTestReport
+check.dependsOn jacocoTestCoverageVerification

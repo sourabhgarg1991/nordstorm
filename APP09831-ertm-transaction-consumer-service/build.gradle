@@ -1,0 +1,205 @@
+plugins {
+    id 'java'
+    id 'idea'
+    id 'jacoco'
+    id 'org.springframework.boot' version '3.5.3'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.diffplug.spotless' version '7.0.4'
+}
+
+ext {
+    lombokVersion = '1.18.38'
+    log4jVersion = '2.24.3'
+    junitVersion = '5.13.0'
+    mockitoVersion = '5.18.0'
+    schemaRepository = '1918'
+    awsSdkVersion2 = '2.30.33'
+    dataIntegrationCommon = '1.0.2'
+}
+
+group = "com.nordstrom.finance.dataintegration.ertm"
+version = "1.0.0"
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    implementation("org.projectlombok:lombok:${lombokVersion}")
+    annotationProcessor("org.projectlombok:lombok:${lombokVersion}")
+
+    //AWS SDK
+    implementation("software.amazon.awssdk:s3:${awsSdkVersion2}")
+    implementation("software.amazon.awssdk:sts:${awsSdkVersion2}")
+    implementation("software.amazon.awssdk:s3-transfer-manager:${awsSdkVersion2}")
+
+    implementation("org.slf4j:slf4j-api:2.0.12")
+    implementation("org.apache.logging.log4j:log4j-api:${log4jVersion}")
+    implementation("org.apache.logging.log4j:log4j-core:${log4jVersion}")
+    implementation("org.apache.logging.log4j:log4j-slf4j2-impl:${log4jVersion}")
+
+    implementation("org.springframework.boot:spring-boot-starter")
+    implementation("org.springframework.boot:spring-boot-starter-web")
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+
+    runtimeOnly("org.postgresql:postgresql:42.7.3")
+
+    implementation("org.aspectj:aspectjweaver:1.9.19")
+    implementation("com.newrelic.agent.java:newrelic-api:7.10.0")
+    implementation("com.opencsv:opencsv:5.9")
+    implementation("com.nordstrom.finance.dataintegration.common:data-integration-common:${dataIntegrationCommon}")
+    implementation "com.datadoghq:java-dogstatsd-client:4.4.3"
+
+    testImplementation("org.springframework.boot:spring-boot-test")
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.junit.jupiter:junit-jupiter:${junitVersion}")
+    testImplementation("org.mockito:mockito-junit-jupiter:${mockitoVersion}")
+    testImplementation("org.mockito:mockito-core:${mockitoVersion}")
+    testImplementation("org.assertj:assertj-core:3.6.1")
+    testImplementation("software.amazon.awssdk:s3:${awsSdkVersion2}")
+
+    runtimeOnly("org.junit.platform:junit-platform-launcher:1.12.2")
+
+    runtimeOnly("com.h2database:h2") // TODO: Delete when DB is ready and h2 is no longer needed
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events = ["standardOut", "started", "passed", "skipped", "failed"]
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+    finalizedBy jacocoTestReport
+    jacoco {
+        destinationFile = layout.buildDirectory.file("jacoco/test.exec").get().asFile
+    }
+}
+
+sourceSets {
+    integrationTest {
+        java {
+            srcDir file('src/integrationTest')
+        }
+        resources.srcDir file('src/integrationTest/resources')
+        compileClasspath += main.output + test.output
+        runtimeClasspath += main.output + test.output + compileClasspath
+        annotationProcessorPath += main.annotationProcessorPath
+        compileClasspath += configurations['testRuntimeClasspath']
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation, implementation
+    integrationTestRuntimeOnly.extendsFrom runtimeOnly
+
+    integrationAnnotationProcessor.extendsFrom annotationProcessor
+    integrationCompileOnly.extendsFrom compileOnly
+
+    configureEach {
+        // remove Boot's default logging (Logback + starter-logging)
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+        exclude group: 'ch.qos.logback', module: 'logback-classic'
+    }
+}
+
+spotless {
+    java {
+        googleJavaFormat('1.17.0')
+        removeUnusedImports()
+    }
+}
+
+jacoco {
+    toolVersion = "0.8.13"
+    reportsDirectory = layout.buildDirectory.dir("reports/jacoco/test")
+}
+
+tasks.register("coverage") {
+    dependsOn {
+        jacocoTestReport
+    }
+    doLast {
+        println "Test coverage report: " + jacocoTestReport.reports.getHtml().getEntryPoint().toURI()
+    }
+}
+
+def jacocoExcludeList = ['**/config/**',
+                         '**/exception/**',
+                         '**/model/**',
+                         '**/constant/**',
+                         '**/entity/**',
+                         '**/readiness/**',
+                         '**/repository/**',
+                         'com/nordstrom/ertm/dataintegration/Application.class']
+
+jacocoTestReport {
+    reports {
+        csv.required = true
+        xml.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/test')
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: jacocoExcludeList)
+        }))
+    }
+}
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                minimum = 0.8
+            }
+        }
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: jacocoExcludeList)
+        }))
+    }
+}
+
+tasks.register('jacocoIntegrationTestReport', JacocoReport) {
+    dependsOn integrationTest
+    sourceSets sourceSets.main
+    executionData layout.buildDirectory.file("jacoco/integrationTest.exec").get().asFile
+    reports {
+        xml.required = true
+        html.outputLocation.set(layout.buildDirectory.dir('reports/jacoco/integrationTest'))
+        csv.required = false
+    }
+}
+
+apply plugin: 'idea'
+idea {
+    module {
+        testSources.from(file('integrationTest/java'))
+    }
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    testLogging {
+        events = ["standardOut", "started", "passed", "skipped", "failed"]
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+}
+
+integrationTest {
+    finalizedBy jacocoIntegrationTestReport
+    jacoco {
+        destinationFile = layout.buildDirectory.file("jacoco/integrationTest.exec").get().asFile
+    }
+}
+
